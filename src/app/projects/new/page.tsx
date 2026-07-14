@@ -1,18 +1,17 @@
 'use client'
 export const dynamic = 'force-dynamic'
 import { useEffect, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter, } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
 import { PROJECT_STATUSES } from '@/lib/constants'
 import type { Customer } from '@/lib/types'
 
 export default function NewProjectPage() {
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const customerIdFromUrl = searchParams.get('customer_id') || ''
+ 
   const [customers, setCustomers] = useState<Customer[]>([])
   const [form, setForm] = useState({
-    customer_id: customerIdFromUrl,
+    customer_id: '',
     project_name: '',
     project_address: '',
     postal_code: '',
