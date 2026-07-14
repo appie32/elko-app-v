@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
-
+import { Buffer } from 'node:buffer'
 export const runtime = 'nodejs'
 
 type ProductLinePayload = {
@@ -385,7 +385,7 @@ export async function POST(request: NextRequest) {
 
   const bytes = await pdfDoc.save()
 
-  return new Response(bytes, {
+ return new Response(Buffer.from(bytes), {
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${quoteNumber}.pdf"`,
