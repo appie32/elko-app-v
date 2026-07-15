@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
 import type { Customer } from '@/lib/types'
@@ -11,7 +11,7 @@ const PROJECT_STATUSES = [
   'Ingemeten',
   'Offerte gemaakt',
   'Offerte verzonden',
-  'Akkoord klant',
+  'Akkoord / opdracht',
   'Bestelling doorgezet',
   'Montage gepland',
   'Gemonteerd',
@@ -31,11 +31,18 @@ const SOURCES = [
   'Anders',
 ]
 
+function buildAddress(customer: any) {
+  const street = customer?.street || ''
+  const houseNumber = customer?.house_number || ''
+  return `${street} ${houseNumber}`.trim()
+}
+
 export default function NewProjectPage() {
   const router = useRouter()
 
   const [customers, setCustomers] = useState<Customer[]>([])
   const [customerMode, setCustomerMode] = useState<'existing' | 'new'>('existing')
+  const [useDifferentProjectAddress, setUseDifferentProjectAddress] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -77,6 +84,10 @@ export default function NewProjectPage() {
     loadCustomers()
   }, [])
 
+  const selectedCustomer = useMemo(() => {
+    return customers.find((customer) => customer.id === form.customer_id) as any
+  }, [customers, form.customer_id])
+
   function update(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
     setMessage('')
@@ -84,6 +95,20 @@ export default function NewProjectPage() {
 
   function updateCustomer(field: string, value: string) {
     setNewCustomer((prev) => ({ ...prev, [field]: value }))
+    setMessage('')
+  }
+
+  function selectExistingCustomer(customerId: string) {
+    const customer: any = customers.find((item) => item.id === customerId)
+
+    setForm((prev) => ({
+      ...prev,
+      customer_id: customerId,
+      project_name:
+        prev.project_name ||
+        (customer ? `Horren woning ${customer.customer_name}` : ''),
+    }))
+
     setMessage('')
   }
 
@@ -100,6 +125,10 @@ export default function NewProjectPage() {
       throw new Error('Vul de klantnaam in.')
     }
 
+    if (!newCustomer.city.trim()) {
+      throw new Error('Vul de woonplaats van de klant in.')
+    }
+
     const { data, error } = await supabase
       .from('customers')
       .insert(newCustomer)
@@ -113,6 +142,42 @@ export default function NewProjectPage() {
     return data.id
   }
 
+  function getProjectAddress() {
+    if (useDifferentProjectAddress) {
+      return form.project_address || null
+    }
+
+    if (customerMode === 'existing') {
+      return buildAddress(selectedCustomer) || form.project_address || null
+    }
+
+    return buildAddress(newCustomer) || form.project_address || null
+  }
+
+  function getProjectPostalCode() {
+    if (useDifferentProjectAddress) {
+      return form.postal_code || null
+    }
+
+    if (customerMode === 'existing') {
+      return selectedCustomer?.postal_code || form.postal_code || null
+    }
+
+    return newCustomer.postal_code || form.postal_code || null
+  }
+
+  function getProjectCity() {
+    if (useDifferentProjectAddress) {
+      return form.city || selectedCustomer?.city || newCustomer.city || null
+    }
+
+    if (customerMode === 'existing') {
+      return selectedCustomer?.city || form.city || null
+    }
+
+    return newCustomer.city || form.city || null
+  }
+
   async function save() {
     if (saving) return
 
@@ -122,12 +187,25 @@ export default function NewProjectPage() {
     try {
       const customerId = await createCustomerIfNeeded()
 
+      const projectCity = getProjectCity()
+
+      if (!projectCity) {
+        throw new Error('Woonplaats ontbreekt. Vul de woonplaats bij de klant of het projectadres in.')
+      }
+
+      const projectName =
+        form.project_name ||
+        `Horren woning ${customerMode === 'existing'
+          ? selectedCustomer?.customer_name || 'klant'
+          : newCustomer.customer_name
+        }`
+
       const payload = {
         customer_id: customerId,
-        project_name: form.project_name || `Project ${newCustomer.customer_name}`,
-        project_address: form.project_address || newCustomer.street || null,
-        postal_code: form.postal_code || newCustomer.postal_code || null,
-        city: form.city || newCustomer.city || null,
+        project_name: projectName,
+        project_address: getProjectAddress(),
+        postal_code: getProjectPostalCode(),
+        city: projectCity,
         request_date: form.request_date || null,
         measurement_date: form.measurement_date || null,
         status: form.status,
@@ -159,35 +237,53 @@ export default function NewProjectPage() {
       <div className="row" style={{ marginBottom: 18 }}>
         <button
           className={customerMode === 'existing' ? 'button' : 'button secondary'}
-          onClick={() => setCustomerMode('existing')}
+          onClick={() => {
+            setCustomerMode('existing')
+            setUseDifferentProjectAddress(false)
+          }}
         >
           Bestaande klant
         </button>
 
         <button
           className={customerMode === 'new' ? 'button' : 'button secondary'}
-          onClick={() => setCustomerMode('new')}
+          onClick={() => {
+            setCustomerMode('new')
+            setUseDifferentProjectAddress(false)
+          }}
         >
           Nieuwe klant direct aanmaken
         </button>
       </div>
 
       {customerMode === 'existing' ? (
-        <div className="grid grid-2">
-          <label>
-            Klant
-            <select
-              value={form.customer_id}
-              onChange={(e) => update('customer_id', e.target.value)}
-            >
-              <option value="">Kies klant</option>
-              {customers.map((customer) => (
-                <option key={customer.id} value={customer.id}>
-                  {customer.customer_name} — {customer.city}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="card">
+          <h2>Klant</h2>
+
+          <div className="grid grid-2">
+            <label>
+              Kies klant
+              <select
+                value={form.customer_id}
+                onChange={(e) => selectExistingCustomer(e.target.value)}
+              >
+                <option value="">Kies klant</option>
+                {customers.map((customer: any) => (
+                  <option key={customer.id} value={customer.id}>
+                    {customer.customer_name} — {customer.city}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {selectedCustomer && (
+            <p className="muted" style={{ marginTop: 12 }}>
+              Adres wordt gebruikt: {buildAddress(selectedCustomer) || 'geen straat bekend'} ·{' '}
+              {selectedCustomer.postal_code || 'geen postcode'} ·{' '}
+              {selectedCustomer.city || 'geen woonplaats'}
+            </p>
+          )}
         </div>
       ) : (
         <div className="card">
@@ -281,33 +377,6 @@ export default function NewProjectPage() {
         </label>
 
         <label>
-          Projectadres
-          <input
-            value={form.project_address}
-            onChange={(e) => update('project_address', e.target.value)}
-            placeholder="Laat leeg als gelijk aan klantadres"
-          />
-        </label>
-
-        <label>
-          Postcode
-          <input
-            value={form.postal_code}
-            onChange={(e) => update('postal_code', e.target.value)}
-            placeholder="Laat leeg als gelijk aan klantadres"
-          />
-        </label>
-
-        <label>
-          Woonplaats
-          <input
-            value={form.city}
-            onChange={(e) => update('city', e.target.value)}
-            placeholder="Laat leeg als gelijk aan klantadres"
-          />
-        </label>
-
-        <label>
           Status
           <select
             value={form.status}
@@ -319,6 +388,44 @@ export default function NewProjectPage() {
           </select>
         </label>
       </div>
+
+      <label style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16 }}>
+        <input
+          type="checkbox"
+          checked={useDifferentProjectAddress}
+          onChange={(e) => setUseDifferentProjectAddress(e.target.checked)}
+          style={{ width: 'auto' }}
+        />
+        Project is op een ander adres dan het klantadres
+      </label>
+
+      {useDifferentProjectAddress && (
+        <div className="grid grid-2" style={{ marginTop: 16 }}>
+          <label>
+            Projectadres
+            <input
+              value={form.project_address}
+              onChange={(e) => update('project_address', e.target.value)}
+            />
+          </label>
+
+          <label>
+            Postcode
+            <input
+              value={form.postal_code}
+              onChange={(e) => update('postal_code', e.target.value)}
+            />
+          </label>
+
+          <label>
+            Woonplaats
+            <input
+              value={form.city}
+              onChange={(e) => update('city', e.target.value)}
+            />
+          </label>
+        </div>
+      )}
 
       <label style={{ marginTop: 16 }}>
         Interne opmerking
