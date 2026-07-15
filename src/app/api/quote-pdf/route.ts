@@ -1,394 +1,393 @@
-import { NextRequest } from 'next/server'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
-import { readFile } from 'fs/promises'
-import { join } from 'path'
-import { Buffer } from 'node:buffer'
+
 export const runtime = 'nodejs'
 
-type ProductLinePayload = {
-  room: string
-  product_type: string
-  quantity: number
-  width_mm?: number | null
-  height_mm?: number | null
-  standard_color?: string | null
-  ral_code?: string | null
-  mesh_type?: string | null
-  bottom_profile?: string | null
-  execution_description?: string | null
-  customer_note?: string | null
-  manual_price: number
+function formatEuro(amount: number | string | null | undefined) {
+  const value = Number(amount || 0)
+
+  return new Intl.NumberFormat('nl-NL', {
+    style: 'currency',
+    currency: 'EUR',
+  }).format(value)
 }
 
-function euro(amount: number | string | null | undefined) {
-  const value = Number(amount || 0)
-  return `EUR ${new Intl.NumberFormat('nl-NL', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value)}`
+function lineTotal(line: any) {
+  return Number(line.quantity || 1) * Number(line.manual_price || 0)
+}
+
+function normalizeProductName(productType: string | null | undefined) {
+  const value = String(productType || '').trim()
+
+  if (!value) return 'Maatwerk hor'
+  if (value === 'Klik-plissé raamhor') return 'Klik-plissé raamhor op maat'
+  if (value === 'Enkele plissé hordeur') return 'Enkele plissé hordeur op maat'
+  if (value === 'Dubbele plissé hordeur') return 'Dubbele plissé hordeur op maat'
+  if (value === 'Schuifpui plissé hordeur') return 'Schuifpui plissé hordeur op maat'
+
+  return value
+}
+
+function productTitle(line: any) {
+  const productName = normalizeProductName(line.product_type)
+  const room = line.room ? ` voor ${line.room}` : ''
+
+  if (line.product_type === 'Extra werkzaamheden') {
+    return line.execution_description || `Extra werkzaamheden${room}`
+  }
+
+  return `${productName}${room}`
+}
+
+function productDetail(line: any) {
+  const details: string[] = []
+
+  if (line.execution_description) {
+    details.push(line.execution_description)
+  } else {
+    if (line.width_mm && line.height_mm) {
+      details.push(`Maat ca. ${line.width_mm} x ${line.height_mm} mm`)
+    }
+
+    if (line.ral_code) {
+      details.push(`Profielkleur: ${line.ral_code}`)
+    } else if (line.standard_color) {
+      details.push(`Profielkleur: ${line.standard_color}`)
+    }
+
+    if (line.mesh_type) {
+      details.push(`Gaas: ${line.mesh_type}`)
+    }
+
+    if (line.bottom_profile && line.bottom_profile !== 'Niet van toepassing') {
+      details.push(`Onderprofiel: ${line.bottom_profile}`)
+    }
+  }
+
+  if (line.customer_note) {
+    details.push(line.customer_note)
+  }
+
+  return details.join(' | ')
+}
+
+function cleanText(value: string) {
+  return String(value || '')
+    .replace(/[•]/g, '-')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[–—]/g, '-')
 }
 
 function wrapText(text: string, maxChars: number) {
-  const words = String(text || '').split(/\s+/).filter(Boolean)
+  const words = cleanText(text).split(' ')
   const lines: string[] = []
   let current = ''
 
   for (const word of words) {
-    if ((current + ' ' + word).trim().length > maxChars) {
-      if (current.trim()) lines.push(current.trim())
+    const next = current ? `${current} ${word}` : word
+
+    if (next.length > maxChars) {
+      if (current) lines.push(current)
       current = word
     } else {
-      current = `${current} ${word}`.trim()
+      current = next
     }
   }
 
-  if (current.trim()) lines.push(current.trim())
+  if (current) lines.push(current)
+
   return lines
 }
 
-function productTitle(line: ProductLinePayload) {
-  if (line.product_type === 'Extra werkzaamheden') {
-    return line.execution_description || `Extra werkzaamheden - ${line.room}`
-  }
-
-  return `${line.product_type} - ${line.room}`
-}
-
-function productDetails(line: ProductLinePayload) {
-  const parts: string[] = []
-
-  if (line.ral_code) {
-    parts.push(`kleur profiel: ${line.ral_code}`)
-  } else if (line.standard_color) {
-    parts.push(`kleur profiel: ${line.standard_color.toLowerCase()}`)
-  }
-
-  if (line.bottom_profile) parts.push(`onderprofiel: ${line.bottom_profile.toLowerCase()}`)
-  if (line.mesh_type) parts.push(`gaas: ${line.mesh_type.toLowerCase()}`)
-  if (line.width_mm && line.height_mm) parts.push(`maat ca. ${line.width_mm} x ${line.height_mm} mm`)
-  if (line.customer_note) parts.push(line.customer_note)
-
-  return parts.join(' | ')
-}
-
-function projectSummary(lines: ProductLinePayload[]) {
-  if (!lines.length) return 'de besproken maatwerkopdracht'
-
-  const map = new Map<string, number>()
-  for (const line of lines) {
-    map.set(line.product_type, (map.get(line.product_type) || 0) + Number(line.quantity || 1))
-  }
-
-  const parts = Array.from(map.entries()).map(([type, count]) => `${count} ${type.toLowerCase()}`)
-  if (parts.length === 1) return parts[0]
-  if (parts.length === 2) return `${parts[0]} en ${parts[1]}`
-  return `${parts.slice(0, -1).join(', ')} en ${parts[parts.length - 1]}`
-}
-
-export async function POST(request: NextRequest) {
-  const body = await request.json()
-
-  const quoteNumber = String(body.quoteNumber || 'ELKO-OFFERTE')
-  const quoteDate = String(body.quoteDate || new Date().toLocaleDateString('nl-NL'))
-  const documentType = String(body.documentType || 'OFFERTE')
-  const customer = body.customer || {}
-  const project = body.project || {}
-  const productLines: ProductLinePayload[] = body.productLines || []
-  const totalAmount = Number(body.totalAmount || 0)
-  const subject = String(body.subject || 'maatwerk horren')
-
-  const pdfDoc = await PDFDocument.create()
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-
-  let logoImage = null
+export async function POST(request: Request) {
   try {
-    const logoBytes = await readFile(join(process.cwd(), 'public', 'elko-logo-white.png'))
-    logoImage = await pdfDoc.embedPng(logoBytes)
-  } catch {
-    logoImage = null
-  }
+    const body = await request.json()
 
-  const pageWidth = 595.28
-  const pageHeight = 841.89
-  const margin = 56
-  const dark = rgb(0.09, 0.14, 0.16)
-  const text = rgb(0.14, 0.18, 0.21)
-  const muted = rgb(0.45, 0.50, 0.54)
-  const light = rgb(0.96, 0.97, 0.98)
-  const gold = rgb(0.78, 0.53, 0.22)
-  const border = rgb(0.82, 0.85, 0.87)
+    const {
+      quoteNumber,
+      quoteDate,
+      customer,
+      project,
+      productLines,
+      totalAmount,
+    } = body
 
-  let page = pdfDoc.addPage([pageWidth, pageHeight])
-  let y = pageHeight - margin
+    const pdfDoc = await PDFDocument.create()
 
-  function addFooter(pageNumber: number) {
-    page.drawLine({
-      start: { x: margin, y: 54 },
-      end: { x: pageWidth - margin, y: 54 },
-      thickness: 0.7,
-      color: border,
-    })
-    page.drawText('ELKO Solutions   |   Fly Horren   |   @fly.horren', {
-      x: margin,
-      y: 35,
-      size: 8,
-      font,
-      color: muted,
-    })
-    page.drawText(`Pagina ${pageNumber}`, {
-      x: pageWidth - margin - 45,
-      y: 35,
-      size: 8,
-      font,
-      color: muted,
-    })
-  }
+    let page = pdfDoc.addPage([595.28, 841.89])
+    const { width, height } = page.getSize()
 
-  function newPage() {
-    addFooter(pdfDoc.getPageCount())
-    page = pdfDoc.addPage([pageWidth, pageHeight])
-    y = pageHeight - margin
-  }
+    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
-  function ensureSpace(height: number) {
-    if (y - height < 78) newPage()
-  }
+    const darkBrown = rgb(0.29, 0.21, 0.13)
+    const beige = rgb(0.91, 0.86, 0.79)
+    const sand = rgb(0.80, 0.72, 0.62)
+    const darkGray = rgb(0.18, 0.18, 0.18)
+    const white = rgb(1, 1, 1)
 
-  function drawTextLine(value: string, x: number, yy: number, size = 10, isBold = false, color = text) {
-    page.drawText(value, {
-      x,
-      y: yy,
-      size,
-      font: isBold ? bold : font,
-      color,
-    })
-  }
+    const margin = 46
+    let y = height - 48
 
-  function drawWrapped(value: string, x: number, maxWidthChars: number, size = 9.5, leading = 13, color = text, isBold = false) {
-    const lines = wrapText(value, maxWidthChars)
-    for (const line of lines) {
-      ensureSpace(leading + 2)
-      page.drawText(line, {
-        x,
-        y,
-        size,
-        font: isBold ? bold : font,
-        color,
-      })
-      y -= leading
+    function newPage() {
+      page = pdfDoc.addPage([595.28, 841.89])
+      y = height - 48
     }
-  }
 
-  // Header
-  page.drawRectangle({
-    x: 0,
-    y: pageHeight - 104,
-    width: pageWidth,
-    height: 104,
-    color: dark,
-  })
+    function ensureSpace(space: number) {
+      if (y - space < 70) {
+        newPage()
+      }
+    }
 
-  if (logoImage) {
-    const logoWidth = 98
-    const scale = logoWidth / logoImage.width
-    const logoHeight = logoImage.height * scale
-    page.drawImage(logoImage, {
-      x: margin,
-      y: pageHeight - 67,
-      width: logoWidth,
-      height: logoHeight,
+    function drawText(
+      text: string,
+      x: number,
+      yy: number,
+      size = 10,
+      options?: { bold?: boolean; color?: any }
+    ) {
+      page.drawText(cleanText(text), {
+        x,
+        y: yy,
+        size,
+        font: options?.bold ? fontBold : fontRegular,
+        color: options?.color || darkGray,
+      })
+    }
+
+    function drawWrapped(
+      text: string,
+      x: number,
+      size = 10,
+      maxChars = 78,
+      lineHeight = 14,
+      options?: { bold?: boolean; color?: any }
+    ) {
+      const lines = wrapText(text, maxChars)
+
+      for (const line of lines) {
+        ensureSpace(lineHeight + 4)
+        drawText(line, x, y, size, options)
+        y -= lineHeight
+      }
+    }
+
+    // Header
+    page.drawRectangle({
+      x: 0,
+      y: height - 142,
+      width,
+      height: 142,
+      color: darkBrown,
     })
-  } else {
-    page.drawText('ELKO', { x: margin, y: pageHeight - 55, size: 18, font: bold, color: rgb(1, 1, 1) })
-    page.drawText('SOLUTIONS', { x: margin, y: pageHeight - 70, size: 7, font: bold, color: gold })
-  }
 
-  page.drawText(documentType.toUpperCase(), {
-    x: pageWidth - margin - 92,
-    y: pageHeight - 55,
-    size: 16,
-    font: bold,
-    color: rgb(1, 1, 1),
-  })
-  page.drawText('MAATWERK HORREN', {
-    x: pageWidth - margin - 104,
-    y: pageHeight - 75,
-    size: 8,
-    font: bold,
-    color: rgb(0.88, 0.91, 0.93),
-  })
+    drawText('Elko Solutions', margin, height - 58, 18, {
+      bold: true,
+      color: white,
+    })
 
-  y = pageHeight - 145
+    drawText('Elko Horren', margin, height - 82, 11, {
+      color: beige,
+    })
 
-  // Blocks
-  page.drawText('Voor:', { x: margin, y, size: 9, font: bold, color: text })
-  page.drawText(String(customer.customer_name || ''), { x: margin + 50, y, size: 9, font, color: text })
-  y -= 14
-  if (customer.street || customer.house_number) {
-    page.drawText(`${customer.street || ''} ${customer.house_number || ''}`.trim(), { x: margin + 50, y, size: 9, font, color: text })
-    y -= 14
-  }
-  page.drawText(`${customer.postal_code || ''} ${customer.city || project.city || ''}`.trim(), { x: margin + 50, y, size: 9, font, color: text })
-  y -= 14
-  if (customer.phone) {
-    page.drawText(`Tel: ${customer.phone}`, { x: margin + 50, y, size: 9, font, color: text })
-    y -= 14
-  }
-  if (customer.email) {
-    page.drawText(`E-mail: ${customer.email}`, { x: margin + 50, y, size: 9, font, color: text })
-  }
+    drawText('OFFERTE MAATWERK HORREN', margin, height - 116, 20, {
+      bold: true,
+      color: white,
+    })
 
-  const rightX = 325
-  let ry = pageHeight - 145
-  page.drawText(`${documentType[0] + documentType.slice(1).toLowerCase()}nummer:`, { x: rightX, y: ry, size: 9, font: bold, color: text })
-  page.drawText(quoteNumber, { x: rightX + 87, y: ry, size: 9, font, color: text })
-  ry -= 14
-  page.drawText('Datum:', { x: rightX, y: ry, size: 9, font: bold, color: text })
-  page.drawText(quoteDate, { x: rightX + 87, y: ry, size: 9, font, color: text })
-  ry -= 14
-  page.drawText('Betreft:', { x: rightX, y: ry, size: 9, font: bold, color: text })
-  page.drawText(subject, { x: rightX + 87, y: ry, size: 9, font, color: text })
+    drawText('Gepaste beleving op ieder vlak', margin, height - 136, 10, {
+      color: beige,
+    })
 
-  y = pageHeight - 235
+    drawText(`Offertenummer: ${quoteNumber || '-'}`, 390, height - 62, 9, {
+      color: white,
+    })
 
-  page.drawText(`${documentType[0] + documentType.slice(1).toLowerCase()} maatwerk horren`, {
-    x: margin,
-    y,
-    size: 19,
-    font: bold,
-    color: text,
-  })
-  y -= 22
-  page.drawText('Volledig verzorgd: nauwkeurig inmeten, levering en vakkundige montage.', {
-    x: margin,
-    y,
-    size: 10,
-    font,
-    color: muted,
-  })
-  y -= 38
+    drawText(`Datum: ${quoteDate || new Date().toLocaleDateString('nl-NL')}`, 390, height - 80, 9, {
+      color: white,
+    })
 
-  page.drawText('Uitgangspunten', { x: margin, y, size: 11, font: bold, color: text })
-  y -= 28
+    y = height - 184
 
-  drawWrapped(`Op basis van de besproken en/of aangeleverde informatie is deze ${documentType.toLowerCase()} opgesteld voor ${projectSummary(productLines)}.`, margin, 95, 9.2, 12)
+    // Customer/project block
+    page.drawRectangle({
+      x: margin,
+      y: y - 92,
+      width: width - margin * 2,
+      height: 92,
+      color: beige,
+    })
 
-  y -= 10
+    drawText('Voor', margin + 18, y - 24, 9, { color: darkBrown, bold: true })
+    drawText(customer?.customer_name || '-', margin + 18, y - 44, 12, { bold: true })
 
-  // Table header
-  const tableX = margin
-  const tableW = pageWidth - margin * 2
-  const col1 = tableX
-  const col2 = tableX + 335
-  const col3 = tableX + 402
-  const col4 = tableX + 482
+    const customerAddress = [
+      [customer?.street, customer?.house_number].filter(Boolean).join(' '),
+      [customer?.postal_code, customer?.city].filter(Boolean).join(' '),
+    ].filter(Boolean)
 
-  ensureSpace(80)
-  page.drawRectangle({ x: tableX, y: y - 22, width: tableW, height: 22, color: dark })
-  page.drawText('Omschrijving', { x: col1 + 6, y: y - 14, size: 8, font: bold, color: rgb(1, 1, 1) })
-  page.drawText('Aantal', { x: col2 + 22, y: y - 14, size: 8, font: bold, color: rgb(1, 1, 1) })
-  page.drawText('Prijs', { x: col3 + 46, y: y - 14, size: 8, font: bold, color: rgb(1, 1, 1) })
-  page.drawText('Totaal', { x: col4 + 36, y: y - 14, size: 8, font: bold, color: rgb(1, 1, 1) })
-  y -= 22
+    drawText(customerAddress.join(' | ') || '-', margin + 18, y - 64, 9)
 
-  productLines.forEach((line, index) => {
-    const detailLines = wrapText(productDetails(line), 58)
-    const rowH = Math.max(50, 28 + detailLines.length * 10)
-    ensureSpace(rowH + 2)
+    drawText('Project', 330, y - 24, 9, { color: darkBrown, bold: true })
+    drawText(project?.project_name || '-', 330, y - 44, 12, { bold: true })
+    drawText(project?.city || customer?.city || '-', 330, y - 64, 9)
+
+    y -= 132
+
+    drawWrapped(
+      'Bedankt voor uw aanvraag. Op basis van de besproken situatie hebben wij onderstaande offerte opgesteld voor maatwerk horren, inclusief levering en montage.',
+      margin,
+      10.5,
+      88,
+      15
+    )
+
+    y -= 12
+
+    // Table header
+    ensureSpace(52)
 
     page.drawRectangle({
-      x: tableX,
-      y: y - rowH,
-      width: tableW,
-      height: rowH,
-      color: index % 2 === 0 ? rgb(1, 1, 1) : light,
+      x: margin,
+      y: y - 24,
+      width: width - margin * 2,
+      height: 26,
+      color: darkBrown,
     })
 
-    // vertical lines
-    ;[col2, col3, col4].forEach((x) => {
-      page.drawLine({ start: { x, y }, end: { x, y: y - rowH }, thickness: 0.6, color: border })
-    })
+    drawText('Omschrijving', margin + 12, y - 16, 9, { bold: true, color: white })
+    drawText('Aantal', 410, y - 16, 9, { bold: true, color: white })
+    drawText('Bedrag', 480, y - 16, 9, { bold: true, color: white })
 
-    page.drawText(productTitle(line), { x: col1 + 6, y: y - 16, size: 8.3, font: bold, color: text })
-    let dy = y - 30
-    for (const detail of detailLines) {
-      page.drawText(detail, { x: col1 + 6, y: dy, size: 7.2, font, color: muted })
-      dy -= 9
+    y -= 44
+
+    const sortedLines = [...(productLines || [])].sort(
+      (a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    )
+
+    for (const line of sortedLines) {
+      ensureSpace(74)
+
+      const startY = y
+      const title = productTitle(line)
+      const detail = productDetail(line)
+      const amount = lineTotal(line)
+
+      drawText(title, margin + 12, y, 10.5, { bold: true })
+      y -= 16
+
+      const detailLines = wrapText(detail, 62)
+
+      for (const detailLine of detailLines.slice(0, 4)) {
+        drawText(detailLine, margin + 12, y, 8.5, { color: rgb(0.36, 0.36, 0.36) })
+        y -= 12
+      }
+
+      drawText(String(line.quantity || 1), 420, startY, 10)
+      drawText(formatEuro(amount), 470, startY, 10, { bold: true })
+
+      y -= 12
+
+      page.drawLine({
+        start: { x: margin, y },
+        end: { x: width - margin, y },
+        thickness: 0.5,
+        color: sand,
+      })
+
+      y -= 18
     }
 
-    const qty = String(line.quantity || 1)
-    const price = euro(line.manual_price)
-    const total = euro(Number(line.manual_price || 0) * Number(line.quantity || 1))
+    ensureSpace(70)
 
-    page.drawText(qty, { x: col2 + 48, y: y - 25, size: 8.5, font, color: text })
-    page.drawText(price, { x: col3 + 20, y: y - 25, size: 8.5, font, color: text })
-    page.drawText(total, { x: col4 + 18, y: y - 25, size: 8.5, font: bold, color: text })
+    page.drawRectangle({
+      x: margin,
+      y: y - 44,
+      width: width - margin * 2,
+      height: 44,
+      color: beige,
+    })
 
-    y -= rowH
-  })
+    drawText('Totaal incl. btw', margin + 18, y - 28, 13, {
+      bold: true,
+      color: darkBrown,
+    })
 
-  // Total bar
-  y -= 28
-  ensureSpace(44)
-  page.drawRectangle({
-    x: tableX,
-    y: y - 28,
-    width: tableW,
-    height: 28,
-    borderColor: gold,
-    borderWidth: 1,
-    color: rgb(0.99, 0.97, 0.93),
-  })
-  page.drawText(`Totaal ${documentType.toLowerCase() === 'factuur' ? 'opdracht' : 'basisuitvoering'} incl. btw`, {
-    x: tableX + 6,
-    y: y - 18,
-    size: 9,
-    font: bold,
-    color: text,
-  })
-  page.drawText(euro(totalAmount), {
-    x: tableX + tableW - 82,
-    y: y - 18,
-    size: 9,
-    font: bold,
-    color: text,
-  })
-  y -= 56
+    drawText(formatEuro(totalAmount), 430, y - 28, 15, {
+      bold: true,
+      color: darkBrown,
+    })
 
-  ensureSpace(120)
-  page.drawText('Toelichting', { x: margin, y, size: 14, font: bold, color: text })
-  y -= 22
+    y -= 84
 
-  const notes = [
-    'De genoemde bedragen zijn inclusief btw.',
-    'Tijdens het inmeten controleren wij de situatie en definitieve maatvoering.',
-    'De volledige betaling mag na montage worden voldaan.',
-    '2 jaar garantie op materiaal en fabricage bij normaal gebruik.',
-  ]
+    ensureSpace(110)
 
-  for (const note of notes) {
-    drawWrapped(`• ${note}`, margin, 96, 9, 12)
+    drawText('Toelichting', margin, y, 13, { bold: true, color: darkBrown })
+    y -= 22
+
+    const notes = [
+      'De offerte is gebaseerd op de ingevoerde maatvoering en besproken uitvoering.',
+      'Bij montage controleren wij de situatie en zorgen wij voor een nette afwerking.',
+      'Betaling kan na montage worden voldaan, tenzij anders afgesproken.',
+      'Garantie: 2 jaar op materiaal en fabricage bij normaal gebruik.',
+    ]
+
+    for (const note of notes) {
+      drawWrapped(`- ${note}`, margin, 9.5, 86, 14)
+    }
+
+    y -= 20
+
+    drawWrapped('Met vriendelijke groet,', margin, 10, 86, 14)
+    drawText('Elko Solutions', margin, y, 11, { bold: true, color: darkBrown })
+    y -= 16
+    drawText('Elko Horren', margin, y, 10)
+
+    // Footer all pages
+    const pages = pdfDoc.getPages()
+    pages.forEach((pdfPage, index) => {
+      pdfPage.drawLine({
+        start: { x: margin, y: 46 },
+        end: { x: width - margin, y: 46 },
+        thickness: 0.5,
+        color: sand,
+      })
+
+      pdfPage.drawText('Elko Solutions | Elko Horren', {
+        x: margin,
+        y: 28,
+        size: 8,
+        font: fontRegular,
+        color: rgb(0.4, 0.4, 0.4),
+      })
+
+      pdfPage.drawText(`Pagina ${index + 1} van ${pages.length}`, {
+        x: width - margin - 72,
+        y: 28,
+        size: 8,
+        font: fontRegular,
+        color: rgb(0.4, 0.4, 0.4),
+      })
+    })
+
+    const bytes = await pdfDoc.save()
+
+    return new Response(new Blob([bytes]), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${quoteNumber || 'elko-offerte'}.pdf"`,
+      },
+    })
+  } catch (error: any) {
+    return Response.json(
+      {
+        error: error?.message || 'PDF kon niet worden gemaakt.',
+      },
+      {
+        status: 500,
+      }
+    )
   }
-
-  y -= 6
-  drawWrapped('Wij kijken ernaar uit om samen tot een mooi en gebruiksvriendelijk eindresultaat te komen.', margin, 90, 10, 13, text, true)
-
-  y -= 25
-  page.drawText('Met vriendelijke groet,', { x: margin, y, size: 9, font, color: text })
-  y -= 14
-  page.drawText('Alexa', { x: margin, y, size: 9, font: bold, color: text })
-  y -= 14
-  page.drawText('Fly Horren / ELKO Solutions', { x: margin, y, size: 9, font, color: text })
-
-  addFooter(pdfDoc.getPageCount())
-
-  const bytes = await pdfDoc.save()
-
- return new Response(Buffer.from(bytes), {
-    headers: {
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${quoteNumber}.pdf"`,
-    },
-  })
 }
