@@ -7,29 +7,44 @@ import { supabase } from '@/lib/supabase/client'
 const PRODUCT_TYPES = [
   'Raamhor op maat',
   'Klik-plissé raamhor',
-  'Enkele plissé hordeur',
-  'Dubbele plissé hordeur',
-  'Schuifpui plissé hordeur',
+  'Enkele plissé hordeur op maat',
+  'Dubbele plissé hordeur op maat',
+  'Schuifpui plissé hordeur op maat',
   'Extra werkzaamheden',
   'Overig',
 ]
 
 const DOOR_PRODUCT_TYPES = [
+  'Enkele plissé hordeur op maat',
+  'Dubbele plissé hordeur op maat',
+  'Schuifpui plissé hordeur op maat',
   'Enkele plissé hordeur',
   'Dubbele plissé hordeur',
   'Schuifpui plissé hordeur',
 ]
 
-const PROFILE_COLORS = [
-  'Wit',
-  'Antraciet',
-  'Bruin',
-  'RAL-kleur op maat',
+const COLORS = [
+  { label: 'Wit — RAL 9016', value: 'Wit — RAL 9016', hex: '#f7f7f2' },
+  { label: 'Zuiver wit — RAL 9010', value: 'Zuiver wit — RAL 9010', hex: '#f1efe4' },
+  { label: 'Crèmewit — RAL 9001', value: 'Crèmewit — RAL 9001', hex: '#e9dfc7' },
+  { label: 'Antraciet — RAL 7016', value: 'Antraciet — RAL 7016', hex: '#383e42' },
+  { label: 'Zwart — RAL 9005', value: 'Zwart — RAL 9005', hex: '#111111' },
+  { label: 'Sepia bruin — RAL 8019', value: 'Sepia bruin — RAL 8019', hex: '#3f342f' },
+  { label: 'RAL-kleur op maat', value: 'RAL-kleur op maat', hex: '#d8d8d8' },
 ]
 
-const MESH_TYPES = [
+const STANDARD_MESH_TYPES = [
   'Standaard horgaas',
   'Premium horgaas / anti-pollen gaas',
+]
+
+const CLICK_PLISSE_MESH_TYPES = [
+  'Standaard horgaas',
+]
+
+const BOTTOM_PROFILE_TYPES = [
+  'Laag onderprofiel',
+  'Hoog onderprofiel',
 ]
 
 const BOTTOM_PROFILE_COLORS = [
@@ -42,6 +57,18 @@ function isDoorProduct(productType: string) {
   return DOOR_PRODUCT_TYPES.includes(productType)
 }
 
+function isClickPlisseWindow(productType: string) {
+  return productType === 'Klik-plissé raamhor'
+}
+
+function getMeshOptions(productType: string) {
+  if (isClickPlisseWindow(productType)) {
+    return CLICK_PLISSE_MESH_TYPES
+  }
+
+  return STANDARD_MESH_TYPES
+}
+
 function getSuggestedPrice(productType: string, profileColor: string, meshType: string) {
   const isRal = profileColor === 'RAL-kleur op maat'
   const isPremium = meshType === 'Premium horgaas / anti-pollen gaas'
@@ -50,17 +77,17 @@ function getSuggestedPrice(productType: string, profileColor: string, meshType: 
     return isRal || isPremium ? 175 : 150
   }
 
-  if (productType === 'Enkele plissé hordeur') {
+  if (productType.includes('Enkele plissé hordeur')) {
     return isRal || isPremium ? 350 : 300
   }
 
-  if (productType === 'Dubbele plissé hordeur') {
+  if (productType.includes('Dubbele plissé hordeur')) {
     if (isRal && isPremium) return 695
     if (isRal || isPremium) return 645
     return 595
   }
 
-  if (productType === 'Schuifpui plissé hordeur') {
+  if (productType.includes('Schuifpui plissé hordeur')) {
     if (isRal && isPremium) return 445
     if (isRal || isPremium) return 395
     return 345
@@ -69,11 +96,16 @@ function getSuggestedPrice(productType: string, profileColor: string, meshType: 
   return 0
 }
 
+function cleanColor(profileColor: string, ralCode: string) {
+  if (profileColor === 'RAL-kleur op maat') {
+    return ralCode || 'RAL-kleur op maat'
+  }
+
+  return profileColor
+}
+
 function buildDescription(form: any) {
-  const color =
-    form.profile_color === 'RAL-kleur op maat'
-      ? form.ral_code || 'RAL-kleur op maat'
-      : form.profile_color
+  const color = cleanColor(form.profile_color, form.ral_code)
 
   const dimensions =
     form.width_mm && form.height_mm
@@ -85,10 +117,10 @@ function buildDescription(form: any) {
   }
 
   if (isDoorProduct(form.product_type)) {
-    return `${form.product_type} voor ${form.room || 'ruimte'}, uitgevoerd in ${color} profiel met ${form.mesh_type.toLowerCase()} en laag onderprofiel in ${form.bottom_profile.toLowerCase()}${dimensions}.`
+    return `${form.product_type} voor ${form.room || 'ruimte'}, uitgevoerd in ${color} met ${form.mesh_type.toLowerCase()}, ${form.bottom_profile_type.toLowerCase()} in ${form.bottom_profile_color.toLowerCase()}${dimensions}.`
   }
 
-  return `${form.product_type} voor ${form.room || 'ruimte'}, uitgevoerd in ${color} profiel met ${form.mesh_type.toLowerCase()}${dimensions}.`
+  return `${form.product_type} voor ${form.room || 'ruimte'}, uitgevoerd in ${color} met ${form.mesh_type.toLowerCase()}${dimensions}.`
 }
 
 export default function NewProductLinePage() {
@@ -101,50 +133,58 @@ export default function NewProductLinePage() {
 
   const [form, setForm] = useState({
     project_id: projectId,
-    sort_order: 1,
+    sort_order: '1',
     room: '',
     product_type: 'Raamhor op maat',
-    quantity: 1,
+    quantity: '1',
     width_mm: '',
     height_mm: '',
-    profile_color: 'Wit',
+    profile_color: 'Wit — RAL 9016',
     ral_code: '',
     mesh_type: 'Standaard horgaas',
-    bottom_profile: 'Wit',
+    bottom_profile_type: 'Laag onderprofiel',
+    bottom_profile_color: 'Wit',
     execution_description: '',
     attention_points: '',
     customer_note: '',
-    suggested_price: 150,
-    manual_price: 150,
+    suggested_price: '150',
+    manual_price: '150',
   })
 
   const doorProduct = isDoorProduct(form.product_type)
+  const meshOptions = getMeshOptions(form.product_type)
+
+  const selectedColor = COLORS.find((color) => color.value === form.profile_color)
 
   const autoDescription = useMemo(() => {
     return buildDescription(form)
   }, [form])
 
   useEffect(() => {
-    const suggested = getSuggestedPrice(
-      form.product_type,
-      form.profile_color,
-      form.mesh_type
+    const correctedMesh = getMeshOptions(form.product_type)[0]
+
+    const meshType = getMeshOptions(form.product_type).includes(form.mesh_type)
+      ? form.mesh_type
+      : correctedMesh
+
+    const suggested = String(
+      getSuggestedPrice(form.product_type, form.profile_color, meshType)
     )
 
-    setForm((prev) => ({
-      ...prev,
-      suggested_price: suggested,
-      manual_price:
-        prev.manual_price === prev.suggested_price
-          ? suggested
-          : prev.manual_price,
-      bottom_profile: isDoorProduct(prev.product_type)
-        ? prev.bottom_profile || 'Wit'
-        : 'Niet van toepassing',
-    }))
+    setForm((prev) => {
+      const manualWasSuggested =
+        prev.manual_price === prev.suggested_price || prev.manual_price === ''
+
+      return {
+        ...prev,
+        mesh_type: meshType,
+        suggested_price: suggested,
+        manual_price: manualWasSuggested ? suggested : prev.manual_price,
+      }
+    })
   }, [form.product_type, form.profile_color, form.mesh_type])
 
-  function update(field: string, value: string | number) {
+  function update(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
     setMessage('')
   }
@@ -170,6 +210,10 @@ export default function NewProductLinePage() {
         ? null
         : form.profile_color
 
+    const bottomProfile = doorProduct
+      ? `${form.bottom_profile_type} - ${form.bottom_profile_color}`
+      : 'Niet van toepassing'
+
     const payload = {
       project_id: projectId,
       sort_order: Number(form.sort_order || 1),
@@ -185,7 +229,7 @@ export default function NewProductLinePage() {
           ? form.ral_code || null
           : null,
       mesh_type: form.mesh_type,
-      bottom_profile: doorProduct ? form.bottom_profile : 'Niet van toepassing',
+      bottom_profile: bottomProfile,
       execution_description: form.execution_description || autoDescription,
       attention_points: form.attention_points,
       customer_note: form.customer_note,
@@ -207,6 +251,7 @@ export default function NewProductLinePage() {
       setForm((prev) => ({
         ...prev,
         room: '',
+        quantity: '1',
         width_mm: '',
         height_mm: '',
         execution_description: '',
@@ -223,6 +268,7 @@ export default function NewProductLinePage() {
   return (
     <div className="card">
       <h1>Productregel toevoegen</h1>
+
       <p className="muted">
         Vul de hor in. Onderprofiel verschijnt alleen bij hordeuren.
       </p>
@@ -254,7 +300,9 @@ export default function NewProductLinePage() {
           <input
             type="number"
             value={form.quantity}
-            onChange={(e) => update('quantity', Number(e.target.value))}
+            onFocus={(e) => e.target.select()}
+            onChange={(e) => update('quantity', e.target.value)}
+            placeholder="1"
           />
         </label>
 
@@ -263,7 +311,9 @@ export default function NewProductLinePage() {
           <input
             type="number"
             value={form.width_mm}
+            onFocus={(e) => e.target.select()}
             onChange={(e) => update('width_mm', e.target.value)}
+            placeholder="Bijv. 890"
           />
         </label>
 
@@ -272,7 +322,9 @@ export default function NewProductLinePage() {
           <input
             type="number"
             value={form.height_mm}
+            onFocus={(e) => e.target.select()}
             onChange={(e) => update('height_mm', e.target.value)}
+            placeholder="Bijv. 2200"
           />
         </label>
 
@@ -282,19 +334,33 @@ export default function NewProductLinePage() {
             value={form.profile_color}
             onChange={(e) => update('profile_color', e.target.value)}
           >
-            {PROFILE_COLORS.map((color) => (
-              <option key={color}>{color}</option>
+            {COLORS.map((color) => (
+              <option key={color.value} value={color.value}>
+                {color.label}
+              </option>
             ))}
           </select>
         </label>
 
+        <div>
+          <label>Kleurvoorbeeld</label>
+          <div
+            style={{
+              height: 46,
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: selectedColor?.hex || '#ddd',
+            }}
+          />
+        </div>
+
         {form.profile_color === 'RAL-kleur op maat' && (
           <label>
-            RAL-code
+            RAL-code / omschrijving
             <input
               value={form.ral_code}
               onChange={(e) => update('ral_code', e.target.value)}
-              placeholder="Bijv. RAL 9016"
+              placeholder="Bijv. RAL 9010 mat"
             />
           </label>
         )}
@@ -305,7 +371,7 @@ export default function NewProductLinePage() {
             value={form.mesh_type}
             onChange={(e) => update('mesh_type', e.target.value)}
           >
-            {MESH_TYPES.map((mesh) => (
+            {meshOptions.map((mesh) => (
               <option key={mesh}>{mesh}</option>
             ))}
           </select>
@@ -315,14 +381,21 @@ export default function NewProductLinePage() {
           <>
             <label>
               Onderprofiel
-              <input value="Laag onderprofiel" readOnly />
+              <select
+                value={form.bottom_profile_type}
+                onChange={(e) => update('bottom_profile_type', e.target.value)}
+              >
+                {BOTTOM_PROFILE_TYPES.map((profile) => (
+                  <option key={profile}>{profile}</option>
+                ))}
+              </select>
             </label>
 
             <label>
               Onderprofielkleur
               <select
-                value={form.bottom_profile}
-                onChange={(e) => update('bottom_profile', e.target.value)}
+                value={form.bottom_profile_color}
+                onChange={(e) => update('bottom_profile_color', e.target.value)}
               >
                 {BOTTOM_PROFILE_COLORS.map((color) => (
                   <option key={color}>{color}</option>
@@ -342,17 +415,19 @@ export default function NewProductLinePage() {
           <input
             type="number"
             value={form.manual_price}
-            onChange={(e) => update('manual_price', Number(e.target.value))}
+            onFocus={(e) => e.target.select()}
+            onChange={(e) => update('manual_price', e.target.value)}
           />
         </label>
       </div>
 
-      {Number(form.quantity) > 1 && (
+      {Number(form.quantity || 1) > 1 && (
         <div className="card" style={{ marginTop: 16 }}>
           <strong>Let op bij meerdere stuks</strong>
           <p className="muted">
-            Gebruik aantal alleen als de horren dezelfde maat en uitvoering
-            hebben. Hebben ze verschillende maten? Maak dan losse regels aan.
+            Gebruik aantal alleen als de horren dezelfde maat en uitvoering hebben.
+            Hebben ze verschillende maten? Maak dan losse regels aan of kopieer
+            de regel en pas ruimte/maat aan.
           </p>
         </div>
       )}
