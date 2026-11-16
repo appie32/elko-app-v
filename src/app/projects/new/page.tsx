@@ -1,501 +1,201 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
+import type { Customer } from '@/lib/types'
 
-const PRODUCT_TYPES = [
-  'Raamhor op maat',
-  'Klik-plissé raamhor',
-  'Enkele plissé hordeur op maat',
-  'Dubbele plissé hordeur op maat',
-  'Schuifpui plissé hordeur op maat',
-  'Extra werkzaamheden',
-  'Overig',
+const statuses = [
+  'Nieuwe aanvraag',
+  'Inmeting gepland',
+  'Ingemeten',
+  'Offerte gemaakt',
+  'Offerte verzonden',
+  'Akkoord / opdracht',
+  'Bestelling doorgezet',
+  'Montage gepland',
+  'Gemonteerd',
+  'Afgerond',
+  'Geannuleerd',
 ]
+const sources = ['Instagram', 'Website', 'Werkspot', 'Via via', 'Bestaande klant', 'Facebook', 'Google', 'Marktplaats', 'Anders']
 
-const DOOR_PRODUCT_TYPES = [
-  'Enkele plissé hordeur op maat',
-  'Dubbele plissé hordeur op maat',
-  'Schuifpui plissé hordeur op maat',
-]
-
-const COLORS = [
-  { label: 'Wit', ral: 'RAL 9016', value: 'Wit — RAL 9016', hex: '#f7f7f2' },
-  { label: 'Antraciet', ral: 'RAL 7016', value: 'Antraciet — RAL 7016', hex: '#383e42' },
-  { label: 'Zwart', ral: 'RAL 9005', value: 'Zwart — RAL 9005', hex: '#111111' },
-  { label: 'Zuiver wit', ral: 'RAL 9010', value: 'Zuiver wit — RAL 9010', hex: '#f1efe4' },
-  { label: 'Crèmewit', ral: 'RAL 9001', value: 'Crèmewit — RAL 9001', hex: '#e9dfc7' },
-  { label: 'RAL-kleur op maat', ral: 'Eigen kleur', value: 'RAL-kleur op maat', hex: '#d8d8d8' },
-]
-
-const PROFILE_WIDTHS = [
-  { label: 'Standaard profiel', value: 'Standaard profiel 4 cm', detail: '4 cm' },
-  { label: 'Slim profiel', value: 'Slim profiel 3 cm', detail: '3 cm' },
-]
-
-const STANDARD_MESH_TYPES = [
-  'Standaard horgaas',
-  'Premium horgaas / anti-pollen gaas',
-]
-
-const CLICK_PLISSE_MESH_TYPES = [
-  'Standaard horgaas',
-]
-
-const BOTTOM_PROFILE_TYPES = [
-  'Laag onderprofiel',
-  'Hoog onderprofiel',
-]
-
-const BOTTOM_PROFILE_COLORS = [
-  'Wit',
-  'Zwart',
-  'Aluminium',
-]
-
-function isDoorProduct(productType: string) {
-  return DOOR_PRODUCT_TYPES.includes(productType)
+function addressOf(c: { street?: string | null; house_number?: string | null }) {
+  return [c.street, c.house_number].filter(Boolean).join(' ')
 }
 
-function isClickPlisseWindow(productType: string) {
-  return productType === 'Klik-plissé raamhor'
-}
-
-function getMeshOptions(productType: string) {
-  if (isClickPlisseWindow(productType)) return CLICK_PLISSE_MESH_TYPES
-  return STANDARD_MESH_TYPES
-}
-
-function getSuggestedPrice(productType: string, profileColor: string, meshType: string) {
-  const isRal = profileColor === 'RAL-kleur op maat'
-  const isPremium = meshType === 'Premium horgaas / anti-pollen gaas'
-
-  if (productType === 'Raamhor op maat' || productType === 'Klik-plissé raamhor') {
-    return isRal || isPremium ? 175 : 150
-  }
-
-  if (productType.includes('Enkele plissé hordeur')) {
-    return isRal || isPremium ? 350 : 300
-  }
-
-  if (productType.includes('Dubbele plissé hordeur')) {
-    if (isRal && isPremium) return 695
-    if (isRal || isPremium) return 645
-    return 595
-  }
-
-  if (productType.includes('Schuifpui plissé hordeur')) {
-    if (isRal && isPremium) return 445
-    if (isRal || isPremium) return 395
-    return 345
-  }
-
-  return 0
-}
-
-function cleanColor(profileColor: string, ralCode: string) {
-  if (profileColor === 'RAL-kleur op maat') {
-    return ralCode || 'RAL-kleur op maat'
-  }
-
-  return profileColor
-}
-
-function buildDescription(form: any) {
-  const color = cleanColor(form.profile_color, form.ral_code)
-
-  const dimensions =
-    form.width_mm && form.height_mm
-      ? `, maat ca. ${form.width_mm} x ${form.height_mm} mm`
-      : ''
-
-  if (form.product_type === 'Extra werkzaamheden') {
-    return form.execution_description || 'Extra werkzaamheden volgens besproken uitvoering.'
-  }
-
-  if (isDoorProduct(form.product_type)) {
-    return `${form.product_type} voor ${form.room || 'ruimte'}, uitgevoerd in ${color}, ${form.profile_width.toLowerCase()}, met ${form.mesh_type.toLowerCase()}, ${form.bottom_profile_type.toLowerCase()} in ${form.bottom_profile_color.toLowerCase()}${dimensions}.`
-  }
-
-  return `${form.product_type} voor ${form.room || 'ruimte'}, uitgevoerd in ${color}, ${form.profile_width.toLowerCase()}, met ${form.mesh_type.toLowerCase()}${dimensions}.`
-}
-
-export default function NewProductLinePage() {
-  const params = useParams()
+export default function NewProjectPage() {
   const router = useRouter()
-  const projectId = params.id as string
-
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [customersError, setCustomersError] = useState('')
+  const [mode, setMode] = useState<'existing' | 'new'>('existing')
+  const [differentAddress, setDifferentAddress] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
-
-  const [form, setForm] = useState({
-    project_id: projectId,
-    sort_order: '1',
-    room: '',
-    product_type: 'Raamhor op maat',
-    quantity: '1',
-    width_mm: '',
-    height_mm: '',
-    profile_color: 'Wit — RAL 9016',
-    ral_code: '',
-    profile_width: 'Standaard profiel 4 cm',
-    mesh_type: 'Standaard horgaas',
-    bottom_profile_type: 'Laag onderprofiel',
-    bottom_profile_color: 'Wit',
-    execution_description: '',
-    attention_points: '',
-    customer_note: '',
-    suggested_price: '150',
-    manual_price: '150',
+  const [createdCustomerId, setCreatedCustomerId] = useState('')
+  const [customer, setCustomer] = useState({
+    customer_name: '', phone: '', email: '', street: '', house_number: '',
+    postal_code: '', city: '', source: 'Instagram', general_note: '',
+  })
+  const [project, setProject] = useState({
+    customer_id: '', project_name: '', project_address: '', postal_code: '',
+    city: '', status: 'Nieuwe aanvraag', internal_note: '', customer_note: '',
   })
 
-  const doorProduct = isDoorProduct(form.product_type)
-  const meshOptions = getMeshOptions(form.product_type)
-  const autoDescription = useMemo(() => buildDescription(form), [form])
-
   useEffect(() => {
-    const options = getMeshOptions(form.product_type)
-    const correctedMesh = options.includes(form.mesh_type) ? form.mesh_type : options[0]
-
-    const suggested = String(
-      getSuggestedPrice(form.product_type, form.profile_color, correctedMesh)
-    )
-
-    setForm((prev) => {
-      const manualWasSuggested =
-        prev.manual_price === prev.suggested_price || prev.manual_price === ''
-
-      return {
-        ...prev,
-        mesh_type: correctedMesh,
-        suggested_price: suggested,
-        manual_price: manualWasSuggested ? suggested : prev.manual_price,
+    async function load() {
+      const { data, error } = await supabase.from('customers').select('*').order('customer_name')
+      if (error) {
+        setCustomersError(`Klanten laden mislukt: ${error.message}`)
+        return
       }
-    })
-  }, [form.product_type, form.profile_color, form.mesh_type])
+      setCustomers((data || []) as Customer[])
+      setCustomersError('')
+    }
+    load()
+  }, [])
 
-  function update(field: string, value: string) {
-    setForm((prev) => ({ ...prev, [field]: value }))
+  const selected = useMemo(
+    () => customers.find((c) => c.id === project.customer_id),
+    [customers, project.customer_id]
+  )
+
+  function updateProject(key: string, value: string) {
+    setProject((previous) => ({ ...previous, [key]: value }))
     setMessage('')
   }
 
-  async function save(addAnother = false) {
-    if (saving) return
+  function updateCustomer(key: string, value: string) {
+    setCustomer((previous) => ({ ...previous, [key]: value }))
+    setMessage('')
+  }
 
-    if (!form.room.trim()) {
-      setMessage('Vul eerst de ruimte / locatie in.')
+  async function save() {
+    if (saving) return
+    setMessage('')
+
+    // Check first so an expired session cannot silently hide or reject data.
+    const { data: auth } = await supabase.auth.getSession()
+    if (!auth.session) {
+      setMessage('Je bent niet (meer) ingelogd. Log opnieuw in via /login en probeer het daarna opnieuw.')
+      return
+    }
+
+    const currentCustomer = mode === 'existing' ? selected : customer
+    if (!currentCustomer) {
+      setMessage('Kies eerst een bestaande klant of maak een nieuwe klant aan.')
+      return
+    }
+    if (mode === 'new' && !customer.customer_name.trim()) {
+      setMessage('Vul de naam van de nieuwe klant in.')
+      return
+    }
+    if (!currentCustomer.city?.trim() && !differentAddress) {
+      setMessage('De woonplaats ontbreekt bij deze klant. Vul de woonplaats bij de klant in.')
+      return
+    }
+    if (differentAddress && (!project.project_address.trim() || !project.city.trim())) {
+      setMessage('Vul bij een afwijkend projectadres zowel het adres als de woonplaats in.')
+      return
+    }
+
+    const projectCity = differentAddress ? project.city.trim() : currentCustomer.city.trim()
+    const projectAddress = differentAddress ? project.project_address.trim() : addressOf(currentCustomer)
+    const postalCode = differentAddress ? project.postal_code.trim() : (currentCustomer.postal_code || '').trim()
+    if (!projectCity) {
+      setMessage('Project kan niet worden opgeslagen zonder woonplaats.')
       return
     }
 
     setSaving(true)
-    setMessage('Opslaan...')
+    setMessage('Project wordt opgeslagen...')
 
-    const colorCategory =
-      form.profile_color === 'RAL-kleur op maat'
-        ? 'RAL-kleur op maat'
-        : 'Standaardkleur'
-
-    const standardColor =
-      form.profile_color === 'RAL-kleur op maat'
-        ? null
-        : form.profile_color
-
-    const bottomProfile = doorProduct
-      ? `${form.bottom_profile_type} - ${form.bottom_profile_color}`
-      : 'Niet van toepassing'
-
-    const payload = {
-      project_id: projectId,
-      sort_order: Number(form.sort_order || 1),
-      room: form.room,
-      product_type: form.product_type,
-      quantity: Number(form.quantity || 1),
-      width_mm: form.width_mm ? Number(form.width_mm) : null,
-      height_mm: form.height_mm ? Number(form.height_mm) : null,
-      color_category: colorCategory,
-      standard_color: standardColor,
-      ral_code:
-        form.profile_color === 'RAL-kleur op maat'
-          ? form.ral_code || null
-          : null,
-      mesh_type: form.mesh_type,
-      bottom_profile: bottomProfile,
-      execution_description: form.execution_description || autoDescription,
-      attention_points: form.attention_points,
-      customer_note: form.customer_note,
-      suggested_price: Number(form.suggested_price || 0),
-      manual_price: Number(form.manual_price || 0),
-    }
-
-    const { error } = await supabase.from('product_lines').insert(payload)
-
-    if (error) {
+    try {
+      let customerId = mode === 'existing' ? project.customer_id : createdCustomerId
+      if (mode === 'new' && !customerId) {
+        const { data, error } = await supabase.from('customers').insert(customer).select('id').single()
+        if (error) throw error
+        customerId = data.id
+        setCreatedCustomerId(customerId) // avoid duplicate customer if project insertion fails
+      }
+      const projectName = project.project_name.trim() || `Horren ${currentCustomer.customer_name}`
+      const { data, error } = await supabase.from('projects').insert({
+        customer_id: customerId,
+        project_name: projectName,
+        project_address: projectAddress || null,
+        postal_code: postalCode || null,
+        city: projectCity,
+        status: project.status,
+        internal_note: project.internal_note,
+        customer_note: project.customer_note,
+      }).select('id').single()
+      if (error) throw error
+      router.push(`/projects/${data.id}`)
+    } catch (err: unknown) {
       setSaving(false)
-      setMessage(error.message)
-      return
-    }
-
-    if (addAnother) {
-      setMessage('Productregel opgeslagen. Je kunt nu de volgende regel invoeren.')
-
-      setForm((prev) => ({
-        ...prev,
-        room: '',
-        quantity: '1',
-        width_mm: '',
-        height_mm: '',
-        execution_description: '',
-        attention_points: '',
-        customer_note: '',
-      }))
-
-      setSaving(false)
-    } else {
-      router.push(`/projects/${projectId}`)
+      setMessage(err instanceof Error ? err.message : 'Opslaan mislukt. Probeer opnieuw.')
     }
   }
 
   return (
     <div className="card">
-      <h1>Productregel toevoegen</h1>
+      <h1>Nieuw project</h1>
+      <p className="muted">Gebruik het bestaande klantadres, of vink een afwijkend projectadres aan.</p>
 
-      <p className="muted">
-        Kies het product, de kleur, uitvoering en maat. De app maakt automatisch een nette offerteomschrijving.
-      </p>
-
-      <h2>Product</h2>
-
-      <div className="grid grid-2">
-        {PRODUCT_TYPES.map((type) => (
-          <button
-            key={type}
-            type="button"
-            className={form.product_type === type ? 'button' : 'button secondary'}
-            onClick={() => update('product_type', type)}
-            style={{ textAlign: 'left' }}
-          >
-            {type}
-          </button>
-        ))}
+      <div className="row" style={{ marginBottom: 18 }}>
+        <button type="button" className={mode === 'existing' ? 'button' : 'button secondary'} onClick={() => { setMode('existing'); setDifferentAddress(false); setMessage('') }}>Bestaande klant</button>
+        <button type="button" className={mode === 'new' ? 'button' : 'button secondary'} onClick={() => { setMode('new'); setDifferentAddress(false); setMessage('') }}>Nieuwe klant aanmaken</button>
       </div>
 
-      <h2 style={{ marginTop: 24 }}>Ruimte en maat</h2>
-
-      <div className="grid grid-2">
-        <label>
-          Ruimte / locatie
-          <input
-            value={form.room}
-            onChange={(e) => update('room', e.target.value)}
-            placeholder="Bijv. woonkamer, slaapkamer, tuindeur"
-          />
-        </label>
-
-        <label>
-          Aantal
-          <input
-            type="number"
-            value={form.quantity}
-            onFocus={(e) => e.target.select()}
-            onChange={(e) => update('quantity', e.target.value)}
-            placeholder="1"
-          />
-        </label>
-
-        <label>
-          Breedte mm
-          <input
-            type="number"
-            value={form.width_mm}
-            onFocus={(e) => e.target.select()}
-            onChange={(e) => update('width_mm', e.target.value)}
-            placeholder="Bijv. 890"
-          />
-        </label>
-
-        <label>
-          Hoogte mm
-          <input
-            type="number"
-            value={form.height_mm}
-            onFocus={(e) => e.target.select()}
-            onChange={(e) => update('height_mm', e.target.value)}
-            placeholder="Bijv. 2200"
-          />
-        </label>
-      </div>
-
-      {Number(form.quantity || 1) > 1 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <strong>Let op bij meerdere stuks</strong>
-          <p className="muted">
-            Gebruik aantal alleen als de horren dezelfde maat en uitvoering hebben.
-            Hebben ze verschillende maten? Maak dan losse regels aan of kopieer deze regel.
-          </p>
+      {mode === 'existing' ? (
+        <div className="card">
+          <h2>Klant kiezen</h2>
+          <label>Klant
+            <select value={project.customer_id} onChange={(e) => updateProject('customer_id', e.target.value)}>
+              <option value="">Selecteer een klant</option>
+              {customers.map((c) => <option key={c.id} value={c.id}>{c.customer_name} — {c.city}</option>)}
+            </select>
+          </label>
+          {customersError && <p style={{ color: '#9c2424' }}>{customersError} <a href="/login">Opnieuw inloggen</a></p>}
+          {!customersError && customers.length === 0 && <p className="muted">Geen klanten gevonden. Controleer of je bent ingelogd, of maak een nieuwe klant aan.</p>}
+          {selected && <p className="muted">Adres: {addressOf(selected) || '-'}, {[selected.postal_code, selected.city].filter(Boolean).join(' ')}</p>}
+        </div>
+      ) : (
+        <div className="card">
+          <h2>Nieuwe klant</h2>
+          {createdCustomerId && <p className="muted">Nieuwe klant is opgeslagen; het project kan veilig opnieuw worden geprobeerd.</p>}
+          <div className="grid grid-2">
+            <label>Naam <input value={customer.customer_name} onChange={(e) => updateCustomer('customer_name', e.target.value)} /></label>
+            <label>Telefoon <input value={customer.phone} onChange={(e) => updateCustomer('phone', e.target.value)} /></label>
+            <label>E-mail <input value={customer.email} onChange={(e) => updateCustomer('email', e.target.value)} /></label>
+            <label>Straat <input value={customer.street} onChange={(e) => updateCustomer('street', e.target.value)} /></label>
+            <label>Huisnummer <input value={customer.house_number} onChange={(e) => updateCustomer('house_number', e.target.value)} /></label>
+            <label>Postcode <input value={customer.postal_code} onChange={(e) => updateCustomer('postal_code', e.target.value)} /></label>
+            <label>Woonplaats <input value={customer.city} onChange={(e) => updateCustomer('city', e.target.value)} /></label>
+            <label>Bron <select value={customer.source} onChange={(e) => updateCustomer('source', e.target.value)}>{sources.map((s) => <option key={s}>{s}</option>)}</select></label>
+          </div>
         </div>
       )}
 
-      <h2 style={{ marginTop: 24 }}>Profielkleur</h2>
-
+      <h2>Projectgegevens</h2>
       <div className="grid grid-2">
-        {COLORS.map((color) => (
-          <button
-            key={color.value}
-            type="button"
-            className={form.profile_color === color.value ? 'button' : 'button secondary'}
-            onClick={() => update('profile_color', color.value)}
-            style={{
-              textAlign: 'left',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-            }}
-          >
-            <span
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                border: '1px solid rgba(0,0,0,0.25)',
-                background: color.hex,
-                display: 'inline-block',
-              }}
-            />
-            <span>
-              <strong>{color.label}</strong>
-              <br />
-              <span style={{ opacity: 0.8 }}>{color.ral}</span>
-            </span>
-          </button>
-        ))}
+        <label>Projectnaam <input value={project.project_name} onChange={(e) => updateProject('project_name', e.target.value)} placeholder="Bijv. Horren woning Leerdam" /></label>
+        <label>Status <select value={project.status} onChange={(e) => updateProject('status', e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>
       </div>
-
-      {form.profile_color === 'RAL-kleur op maat' && (
-        <label style={{ marginTop: 16 }}>
-          RAL-code / omschrijving
-          <input
-            value={form.ral_code}
-            onChange={(e) => update('ral_code', e.target.value)}
-            placeholder="Bijv. RAL 9010 mat"
-          />
-        </label>
-      )}
-
-      <h2 style={{ marginTop: 24 }}>Profiel</h2>
-
-      <div className="grid grid-2">
-        {PROFILE_WIDTHS.map((profile) => (
-          <button
-            key={profile.value}
-            type="button"
-            className={form.profile_width === profile.value ? 'button' : 'button secondary'}
-            onClick={() => update('profile_width', profile.value)}
-            style={{ textAlign: 'left' }}
-          >
-            <strong>{profile.label}</strong>
-            <br />
-            {profile.detail}
-          </button>
-        ))}
-      </div>
-
-      <h2 style={{ marginTop: 24 }}>Gaas en onderprofiel</h2>
-
-      <div className="grid grid-2">
-        <label>
-          Gaassoort
-          <select
-            value={form.mesh_type}
-            onChange={(e) => update('mesh_type', e.target.value)}
-          >
-            {meshOptions.map((mesh) => (
-              <option key={mesh}>{mesh}</option>
-            ))}
-          </select>
-        </label>
-
-        {doorProduct && (
-          <>
-            <label>
-              Onderprofiel
-              <select
-                value={form.bottom_profile_type}
-                onChange={(e) => update('bottom_profile_type', e.target.value)}
-              >
-                {BOTTOM_PROFILE_TYPES.map((profile) => (
-                  <option key={profile}>{profile}</option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Onderprofielkleur
-              <select
-                value={form.bottom_profile_color}
-                onChange={(e) => update('bottom_profile_color', e.target.value)}
-              >
-                {BOTTOM_PROFILE_COLORS.map((color) => (
-                  <option key={color}>{color}</option>
-                ))}
-              </select>
-            </label>
-          </>
-        )}
-
-        <label>
-          Richtprijs
-          <input type="number" value={form.suggested_price} readOnly />
-        </label>
-
-        <label>
-          Definitieve prijs
-          <input
-            type="number"
-            value={form.manual_price}
-            onFocus={(e) => e.target.select()}
-            onChange={(e) => update('manual_price', e.target.value)}
-          />
-        </label>
-      </div>
-
-      <div className="card" style={{ marginTop: 24 }}>
-        <h2>Samenvatting voor offerte</h2>
-        <p className="muted">{autoDescription}</p>
-      </div>
-
-      <label style={{ marginTop: 16 }}>
-        Extra klantgerichte opmerking voor offerte
-        <textarea
-          value={form.customer_note}
-          onChange={(e) => update('customer_note', e.target.value)}
-          placeholder="Alleen invullen als er iets extra's in de offerte moet komen."
-        />
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16 }}>
+        <input type="checkbox" checked={differentAddress} onChange={(e) => setDifferentAddress(e.target.checked)} style={{ width: 'auto' }} />
+        Project is op een ander adres dan het klantadres
       </label>
-
-      <label style={{ marginTop: 16 }}>
-        Interne aandachtspunten voor montage
-        <textarea
-          value={form.attention_points}
-          onChange={(e) => update('attention_points', e.target.value)}
-          placeholder="Bijv. dorpel controleren, extra vulstuk meenemen, plakplint verwijderen."
-        />
-      </label>
-
-      {message && <p className="muted">{message}</p>}
-
+      {differentAddress && <div className="grid grid-2" style={{ marginTop: 12 }}>
+        <label>Projectadres <input value={project.project_address} onChange={(e) => updateProject('project_address', e.target.value)} /></label>
+        <label>Postcode <input value={project.postal_code} onChange={(e) => updateProject('postal_code', e.target.value)} /></label>
+        <label>Woonplaats <input value={project.city} onChange={(e) => updateProject('city', e.target.value)} /></label>
+      </div>}
+      <label style={{ marginTop: 16 }}>Interne opmerking<textarea value={project.internal_note} onChange={(e) => updateProject('internal_note', e.target.value)} /></label>
+      <label style={{ marginTop: 16 }}>Klantopmerking<textarea value={project.customer_note} onChange={(e) => updateProject('customer_note', e.target.value)} /></label>
+      {message && <p role="status" style={{ color: message.toLowerCase().includes('mislukt') || message.includes('ontbreekt') || message.includes('niet') ? '#9c2424' : '#4A3520' }}>{message}</p>}
       <div className="row" style={{ marginTop: 16 }}>
-        <button disabled={saving} onClick={() => save(false)}>
-          {saving ? 'Opslaan...' : 'Opslaan'}
-        </button>
-
-        <button
-          disabled={saving}
-          className="button secondary"
-          onClick={() => save(true)}
-        >
-          {saving ? 'Opslaan...' : 'Opslaan en nieuwe toevoegen'}
-        </button>
+        <button disabled={saving} onClick={save}>{saving ? 'Opslaan...' : 'Project opslaan'}</button>
       </div>
     </div>
   )
