@@ -10,12 +10,13 @@ export default function TopNav() {
       justifyContent: 'space-between',
       alignItems: 'center',
       gap: 12,
-      flexWrap: 'wrap'
+      flexWrap: 'wrap',
     }}>
       <Link href="/dashboard" style={{ fontWeight: 800 }}>ELKO App</Link>
       <nav className="row">
         <Link href="/dashboard">Dashboard</Link>
         <Link href="/customers">Klanten</Link>
+        <Link href="/projects">Projecten</Link>
         <Link href="/projects/new">Nieuw project</Link>
         <Link href="/appointments">Planning</Link>
       </nav>
