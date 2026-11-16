@@ -17,7 +17,8 @@ export default function TopNav() {
         <Link href="/dashboard">Dashboard</Link>
         <Link href="/customers">Klanten</Link>
         <Link href="/projects">Projecten</Link>
-        <Link href="/projects/new">Nieuw project</Link>
+<Link href="/quotes">Offertes</Link>
+     <Link href="/projects/new">Nieuw project</Link>
         <Link href="/appointments">Planning</Link>
       </nav>
     </div>
