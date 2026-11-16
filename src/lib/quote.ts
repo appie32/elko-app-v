@@ -1,3 +1,4 @@
+
 import type { Customer, Project, ProductLine } from './types'
 
 export function formatEuro(amount: number | string | null | undefined): string {
@@ -83,7 +84,7 @@ export function lineTotal(line: ProductLine): number {
 
 export function buildProjectSummary(productLines: ProductLine[]): string {
   if (!productLines.length) {
-    return 'maatwerk horren'
+    return 'maatwerkproducten'
   }
 
   const counts = new Map<string, number>()
@@ -123,20 +124,22 @@ export function buildAccompanyingMessage(params: {
   project: Project
   totalAmount: number
 }): string {
-  const { customer, project, totalAmount } = params
+  const { customer } = params
 
   return `Beste ${customer.customer_name},
 
-Bedankt voor uw aanvraag. Hierbij ontvangt u onze offerte voor ${project.project_name}.
+Hartelijk dank voor uw aanvraag en uw interesse in ELKO Solutions.
 
-Het totaalbedrag komt uit op ${formatEuro(totalAmount)}, inclusief maatwerk, levering en montage.
+In de bijlage vindt u onze offerte op maat voor uw woning of project, gebaseerd op de besproken wensen en uitvoering.
 
-Bij akkoord zetten wij de bestelling definitief door en stemmen wij de verdere planning met u af.
+De offerte bevat een overzicht van de gekozen producten en bijbehorende prijzen. Inmeten, levering en vakkundige montage zijn inbegrepen, tenzij anders vermeld in de offerte.
+
+Mocht u nog vragen hebben of iets willen aanpassen, dan horen wij dat graag. Wij denken graag met u mee.
 
 Met vriendelijke groet,
 
-Elko Solutions
-Elko Horren`
+Alexa - ELKO Solutions
+Maatwerk zonder concessies.`
 }
 
 export function buildQuoteText(params: {
@@ -173,12 +176,14 @@ Totaal incl. btw: ${formatEuro(totalAmount)}
 
 Toelichting
 • De offerte is gebaseerd op de ingevoerde maatvoering en besproken uitvoering.
-• Bij montage controleren wij de situatie en zorgen wij voor een nette afwerking.
-• Betaling kan na montage worden voldaan, tenzij anders afgesproken.
-• Garantie: 2 jaar op materiaal en fabricage bij normaal gebruik.
+• Inclusief inmeten, levering en vakkundige montage, tenzij anders vermeld.
+• Levertijd: 3-5 weken na akkoord.
+• Geldigheid: 30 dagen vanaf de offertedatum.
+• Betaling na montage, tenzij anders afgesproken.
+• Garantie: 2 jaar, onder voorwaarden.
 
 Met vriendelijke groet,
 
-Elko Solutions
-Elko Horren`
+ELKO Solutions
+Maatwerk zonder concessies.`
 }
