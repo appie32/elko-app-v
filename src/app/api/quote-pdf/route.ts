@@ -96,7 +96,32 @@ function detailParts(line: PdfLine): string[] {
       if (/\b(?:nog te bepalen|n\.t\.b\.)\b/i.test(section)) continue
       if (/^ruimte\s*:/i.test(section)) continue
       if (line.width_mm && line.height_mm && /^(?:maat|afmeting|afmetingen)\s*:/i.test(section)) continue
-      parts.push(section.replace(/[—–]/g, '-').replace(/(:\s*)RAL\s*(9016|7016|9005|9010|9001|8019)\b/gi, (_, prefix: string, number: string) => `${prefix}${friendlyColor(`RAL ${number}`)}`))
+      // Een handmatige omschrijving begint soms opnieuw met de productnaam.
+      // Toon die niet dubbel direct onder de vetgedrukte producttitel.
+      let cleaned = section.trim()
+      const productName = valueOrBlank(line.product_type)
+      const room = valueOrBlank(line.room)
+      if (productName && cleaned.toLowerCase().startsWith(productName.toLowerCase())) {
+        const next = cleaned.slice(productName.length)
+        if (!next || /^[\s,.:;-]/.test(next)) cleaned = next.replace(/^[\s,.:;-]+/, '')
+      }
+      if (room && cleaned.toLowerCase().startsWith(`voor ${room.toLowerCase()}`)) {
+        cleaned = cleaned.slice(room.length + 5).replace(/^[\s,.:;-]+/, '')
+      }
+      // Vervang herhaalde maatnotaties niet blindelings: verwijder ze
+      // uitsluitend wanneer ze overeenkomen met de afzonderlijke maatvelden.
+      if (line.width_mm && line.height_mm) {
+        const repeated = cleaned.match(/(?:,?\s*)maat\s*(?:ca\.?|circa)?\s*([0-9.,]+)\s*[x×]\s*([0-9.,]+)\s*(?:mm)?\.?$/i)
+        if (repeated) {
+          const w = Number(repeated[1].replace(',', '.'))
+          const h = Number(repeated[2].replace(',', '.'))
+          if (w === Number(line.width_mm) && h === Number(line.height_mm)) {
+            cleaned = cleaned.slice(0, repeated.index).replace(/[\s,.;:-]+$/, '')
+          }
+        }
+      }
+      if (!cleaned) continue
+      parts.push(cleaned.replace(/[—–]/g, '-').replace(/(:\s*)RAL\s*(9016|7016|9005|9010|9001|8019)\b/gi, (_, prefix: string, number: string) => `${prefix}${friendlyColor(`RAL ${number}`)}`))
     }
   } else if (!rawDescription) {
     if (['Horren', 'Screens', 'Rolluiken'].includes(group)) add('Profielkleur', friendlyColor(o.profile_color || line.ral_code || line.standard_color))
@@ -258,86 +283,91 @@ export async function POST(request: Request) {
       const key = GROUPS.includes(raw) ? raw : 'Overig'
       map.set(key, [...(map.get(key) || []), item])
     }
-    // Onderzijde van de laatste pagina is gereserveerd voor de vaste afsluiting.
-    // Productregels groeien boven dit gebied; waar nodig komt een vervolgpagina.
-    const MIN_PRODUCT_Y = 324
-    const MIN_TOTAL_Y = 308
+    // V3: geen blokkop voor elke productgroep en geen twee kolommen met specificaties.
+    // Een product heeft één duidelijke titel; de groep wordt er klein naast vermeld.
+    // Specificaties lopen onder de titel over vrijwel de volledige paginabreedte.
+    // Totaal en praktische informatie staan samen op de laatste pagina.
+    const CLOSING_MIN_Y = 324
+    const CONTINUATION_MIN_Y = 107
 
-    function groupHeader(name: string, continued = false) {
-      page.drawRectangle({ x: M, y: y - 20, width: RIGHT - M, height: 20, color: PALE })
-      page.drawRectangle({ x: M, y: y - 20, width: 3, height: 20, color: GOLD })
-      text((continued ? `${name} - vervolg` : name).toUpperCase(), M + 12, y - 14, 9.7, bold, BROWN)
-      y -= 26
+    type PreparedRow = {
+      item: PdfLine
+      group: string
+      firstOfGroup: boolean
+      titleLines: string[]
+      specLines: string[]
+      height: number
     }
+    const prepared: PreparedRow[] = []
 
-    // Specificaties staan niet langer in één lange doorlopende tekstregel.
-    // Twee leesbare kolommen zorgen dat kleur, maten, motor en bediening snel te vinden zijn.
-    function detailRows(values: string[]) {
-      const result: { left: string[]; right: string[]; height: number }[] = []
-      for (let i = 0; i < values.length; i += 2) {
-        const left = fit(values[i], normal, 9.4, 232)
-        const right = values[i + 1] ? fit(values[i + 1], normal, 9.4, 224) : []
-        result.push({ left, right, height: Math.max(left.length, right.length, 1) * 12.3 })
+    for (const group of GROUPS) {
+      const items = map.get(group) || []
+      for (let index = 0; index < items.length; index++) {
+        const item = items[index]
+        const titleLines = fit(productTitle(item), bold, 10.5, 254)
+        const specifications = detailParts(item)
+        const specLines = fit(specifications.join('  |  '), normal, 9.4, RIGHT - M - 22)
+        const height = Math.max(titleLines.length, 1) * 13.2 + specLines.length * 11.9 + (specLines.length ? 4 : 0) + 12
+        prepared.push({ item, group, firstOfGroup: index === 0, titleLines, specLines, height })
       }
-      return result
     }
 
-    for (const name of GROUPS) {
-      const items = map.get(name)
-      if (!items?.length) continue
+    for (let index = 0; index < prepared.length; index++) {
+      const entry = prepared[index]
+      const { item, group, titleLines, specLines } = entry
+      const lastRow = index === prepared.length - 1
+      const groupGap = entry.firstOfGroup && index > 0 ? 8 : 0
 
-      // Plaats groepskop en eerste product zoveel mogelijk op dezelfde pagina.
-      if (y - 86 < MIN_PRODUCT_Y) {
+      // Alleen de laatste productpagina reserveert ruimte voor het totaalblok
+      // en de praktische informatie. Andere pagina's mogen verder gevuld worden.
+      const minY = lastRow ? CLOSING_MIN_Y : CONTINUATION_MIN_Y
+      const needsNewPage = y - groupGap - entry.height < minY
+      if (needsNewPage) {
         followingPage()
         columnHeader()
+      } else {
+        y -= groupGap
       }
-      groupHeader(name)
 
-      for (const item of items) {
-        const titles = fit(productTitle(item), bold, 10.7, 237)
-        const rows = detailRows(detailParts(item))
-        const titleHeight = Math.max(titles.length, 1) * 13.4
-        const detailHeight = rows.reduce((sum, row) => sum + row.height, 0)
-        const rowHeight = titleHeight + detailHeight + 15
+      const rowTop = y
+      const displayTitles = titleLines.length ? titleLines : ['Maatwerkproduct']
 
-        if (y - rowHeight < MIN_PRODUCT_Y) {
-          followingPage()
-          columnHeader()
-          groupHeader(name, true)
-        }
-
-        const titleY = y
-        for (const t of titles.length ? titles : ['Maatwerkproduct']) {
-          text(t, M + 10, y, 10.7, bold)
-          y -= 13.4
-        }
-
-        const quantity = Number(item.quantity) || 1
-        right(String(quantity), 360, titleY, 9.6, normal)
-        right(money(item.manual_price), 460, titleY, 9.4, normal)
-        right(money(quantity * Number(item.manual_price || 0)), RIGHT - 9, titleY, 9.6, bold)
-
-        y -= 4
-        for (const row of rows) {
-          const maxLines = Math.max(row.left.length, row.right.length, 1)
-          for (let i = 0; i < maxLines; i++) {
-            if (row.left[i]) text(row.left[i], M + 10, y, 9.4, normal, MUTED)
-            if (row.right[i]) text(row.right[i], 313, y, 9.4, normal, MUTED)
-            y -= 12.3
-          }
-        }
-
-        y -= 1
-        horizontal(y, BEIGE, 0.5)
-        y -= 10
+      for (const titleLine of displayTitles) {
+        text(titleLine, M + 10, y, 10.5, bold)
+        y -= 13.2
       }
-      y -= 6
+
+      // Categorie in dezelfde regel als de productnaam, geen tweede balk erboven.
+      if (entry.firstOfGroup && displayTitles.length === 1) {
+        const titleWidth = bold.widthOfTextAtSize(safe(displayTitles[0]), 10.5)
+        const category = group.toUpperCase()
+        const categoryWidth = normal.widthOfTextAtSize(safe(category), 7.6)
+        if (titleWidth + 17 + categoryWidth < 256) {
+          text(category, M + 10 + titleWidth + 13, rowTop + 0.8, 7.6, normal, MUTED)
+        }
+      }
+
+      const quantity = Number(item.quantity) || 1
+      right(String(quantity), 360, rowTop, 9.5, normal)
+      right(money(item.manual_price), 460, rowTop, 9.2, normal)
+      right(money(quantity * Number(item.manual_price || 0)), RIGHT - 9, rowTop, 9.5, bold)
+
+      if (specLines.length) y -= 4
+      for (const specification of specLines) {
+        text(specification, M + 10, y, 9.4, normal, MUTED)
+        y -= 11.9
+      }
+
+      y -= 4
+      horizontal(y, BEIGE, 0.5)
+      y -= 8
     }
 
-    // Het totaal sluit het productoverzicht af en blijft op dezelfde pagina
-    // als de praktische informatie. De sluitsectie zit op vaste A4-posities.
-    if (y < MIN_TOTAL_Y) {
+    // Bij geen producten blijft de samenvatting eveneens op een geldige positie.
+    // Na de laatste productregel kan de sluitsectie nooit over praktische info heen vallen.
+    if (y < CLOSING_MIN_Y) {
       followingPage()
+      columnHeader()
     }
 
     page.drawRectangle({ x: M, y: y - 56, width: RIGHT - M, height: 56, color: BEIGE })
@@ -345,7 +375,8 @@ export async function POST(request: Request) {
     text('Inclusief btw', M + 16, y - 42, 9.6, normal, MUTED)
     right(money(totalAmount), RIGHT - 16, y - 36, 19, bold, BROWN)
 
-    // Vaste onderzone: ook bij één product staat deze afsluiting onderaan.
+    // Vaste onderzone van de laatste pagina. De ruimte erboven blijft vrij
+    // wanneer de offerte weinig producten bevat, zoals gevraagd.
     page.drawRectangle({ x: M, y: 219, width: RIGHT - M, height: 25, color: PALE })
     text('INCLUSIEF INMETEN, LEVERING EN VAKKUNDIGE MONTAGE', M + 12, 228.5, 9.5, bold, BROWN)
 
