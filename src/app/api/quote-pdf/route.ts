@@ -171,7 +171,21 @@ function normalizedAddress(customer: any): string {
 
 export async function POST(request: Request) {
   try {
-    const { quoteNumber, quoteDate, customer, project, productLines, totalAmount, contactPerson } = await request.json()
+    const { quoteNumber, quoteDate, customer, project, productLines, totalAmount, contactPerson, quoteStyle, installationNotes } = await request.json()
+    // Persoons- en offertegegevens blijven uit de bestaande snapshot komen.
+    // De opmaak is per offerte gekozen; geen globale variabele i.v.m. gelijktijdige PDF-verzoeken.
+    const isExecutive = quoteStyle !== 'signature'
+    const BROWN = isExecutive ? rgb(0.069, 0.157, 0.239) : rgb(0.32, 0.255, 0.216)
+    const BEIGE = isExecutive ? rgb(0.937, 0.949, 0.953) : rgb(0.944, 0.919, 0.882)
+    const PALE = isExecutive ? rgb(0.967, 0.974, 0.978) : rgb(0.978, 0.967, 0.951)
+    const GOLD = rgb(0.725, 0.612, 0.380) // warm metaalgoud #B99C61
+    const DARK = isExecutive ? rgb(0.15, 0.19, 0.22) : rgb(0.20, 0.19, 0.17)
+    const MUTED = isExecutive ? rgb(0.36, 0.42, 0.46) : rgb(0.44, 0.39, 0.35)
+    const WHITE = rgb(1, 1, 1)
+    const specialNotes = typeof installationNotes === 'string' ? installationNotes.trim() : ''
+    if (specialNotes.length > 900) {
+      return Response.json({ error: 'Bijzonderheden: maximaal 900 tekens.' }, { status: 400 })
+    }
     if (!quoteNumber || !customer || !project || !Array.isArray(productLines)) {
       return Response.json({ error: 'Onvolledige offertegegevens.' }, { status: 400 })
     }
@@ -198,33 +212,39 @@ export async function POST(request: Request) {
     function horizontal(py: number, color = GOLD, thickness = 0.6) {
       page.drawLine({ start: { x: M, y: py }, end: { x: RIGHT, y: py }, color, thickness })
     }
-    function logo() {
-      const top = H - 53
+    function logo(ink = BROWN) {
+      const top = H - 52
       const brandWidth = serif.widthOfTextAtSize('ELKO', 27)
-      text('ELKO', M, top, 27, serif, BROWN)
+      text('ELKO', M, top, 27, serif, ink)
       const label = 'SOLUTIONS'
       const letterSize = 8.1
       const letterWidth = [...label].reduce((n, c) => n + bold.widthOfTextAtSize(c, letterSize), 0)
       const tracking = (brandWidth - letterWidth) / (label.length - 1)
       let sx = M
-      for (const ch of label) { text(ch, sx, top - 17, letterSize, bold, BROWN); sx += bold.widthOfTextAtSize(ch, letterSize) + tracking }
+      for (const ch of label) {
+        text(ch, sx, top - 17, letterSize, bold, ink)
+        sx += bold.widthOfTextAtSize(ch, letterSize) + tracking
+      }
     }
     function firstHeader() {
-      page.drawRectangle({ x: 0, y: H - 5, width: W, height: 5, color: BROWN })
-      logo()
-      centered('MAATWERK ZONDER CONCESSIES', H - 56, 8.9, normal, MUTED)
-      right('OFFERTE', RIGHT, H - 56, 20, bold, BROWN)
-      right(quoteNumber, RIGHT, H - 74, 9, normal, MUTED)
-      horizontal(H - 104)
-      y = H - 123
+      // Executive: donkerblauwe kop. Signature: warm taupe/beige.
+      page.drawRectangle({ x: 0, y: H - 108, width: W, height: 108, color: isExecutive ? BROWN : BEIGE })
+      page.drawRectangle({ x: 0, y: H - 110, width: W, height: 2, color: GOLD })
+      const headerInk = isExecutive ? WHITE : BROWN
+      logo(headerInk)
+      centered('MAATWERK ZONDER CONCESSIES', H - 54, 9.1, bold, GOLD)
+      right('OFFERTE', RIGHT, H - 55, 20, bold, headerInk)
+      right(quoteNumber, RIGHT, H - 74, 9, normal, headerInk)
+      if (isExecutive) text('PERSOONLIJK SAMENGESTELD VOOR UW WONING', M, H - 94, 7.9, normal, WHITE)
+      y = H - 120
     }
     function followingPage() {
       page = pdf.addPage([W, H])
-      page.drawRectangle({ x: 0, y: H - 5, width: W, height: 5, color: BROWN })
-      text('ELKO SOLUTIONS', M, H - 47, 14, bold, BROWN)
-      right(`Offerte ${quoteNumber}`, RIGHT, H - 45, 9, normal, MUTED)
-      horizontal(H - 61)
-      y = H - 84
+      page.drawRectangle({ x: 0, y: H - 7, width: W, height: 7, color: GOLD })
+      text('ELKO SOLUTIONS', M, H - 43, 14, bold, BROWN)
+      right(`Offerte ${quoteNumber}`, RIGHT, H - 43, 9, normal, MUTED)
+      horizontal(H - 58)
+      y = H - 80
     }
     function space(height: number, threshold = 91) {
       if (y - height < threshold) followingPage()
@@ -260,7 +280,20 @@ export async function POST(request: Request) {
       `Contactpersoon: ${contactPerson || 'Alexa'}`,
       ...(hasDifferentProjectAddress ? [`Montageadres: ${projectAddress}`] : []),
     ]
-    const panelHeight = hasDifferentProjectAddress ? 111 : 95
+    // De infoblokken groeien alleen wanneer klantnaam of montageadres afbreekt.
+    // Zo blijven adressen leesbaar zonder over de producttitel te lopen.
+    const columnHeight = (primary: string, rest: string[], width: number) =>
+      42 + Math.max(1, fit(primary, bold, 11.1, width).length) * 14 +
+      rest.reduce((sum, value) => sum + fit(value, normal, 9.8, width).length * 12.6, 0)
+    const customerLines = [
+      [customer.street, customer.house_number].filter(Boolean).join(' '),
+      [customer.postal_code, customer.city].filter(Boolean).join(' '),
+    ].filter(Boolean)
+    const panelHeight = Math.max(
+      86,
+      columnHeight(customer.customer_name || '-', customerLines, 219),
+      columnHeight(project.project_name || 'Maatwerk', extraProjectRows, 217),
+    )
     page.drawRectangle({ x: M, y: y - panelHeight, width: RIGHT - M, height: panelHeight, color: BEIGE })
     page.drawLine({ start: { x: 296, y: y - 13 }, end: { x: 296, y: y - panelHeight + 13 }, color: GOLD, thickness: 0.75 })
     infoColumn(M + 16, 219, { title: 'Geadresseerde', primary: customer.customer_name || '-', rest: [
@@ -268,12 +301,12 @@ export async function POST(request: Request) {
       [customer.postal_code, customer.city].filter(Boolean).join(' '),
     ].filter(Boolean) })
     infoColumn(313, 217, { title: 'Projectgegevens', primary: project.project_name || 'Maatwerk', rest: extraProjectRows })
-    y -= panelHeight + 22
+    y -= panelHeight + 16
 
     text('PRODUCTEN EN UITVOERINGEN', M, y, 12.8, bold, BROWN)
-    y -= 18
+    y -= 16
     text('Afmetingen: breedte x hoogte in mm. Alle bedragen zijn inclusief btw.', M, y, 9.6, normal, MUTED)
-    y -= 15
+    y -= 12
     columnHeader()
 
     const sorted = [...productLines].sort((a: PdfLine, b: PdfLine) => Number(a.sort_order || 0) - Number(b.sort_order || 0)) as PdfLine[]
@@ -287,8 +320,8 @@ export async function POST(request: Request) {
     // Een product heeft één duidelijke titel; de groep wordt er klein naast vermeld.
     // Specificaties lopen onder de titel over vrijwel de volledige paginabreedte.
     // Totaal en praktische informatie staan samen op de laatste pagina.
-    const CLOSING_MIN_Y = 324
-    const CONTINUATION_MIN_Y = 107
+    const CLOSING_MIN_Y = 309
+    const CONTINUATION_MIN_Y = 111
 
     type PreparedRow = {
       item: PdfLine
@@ -307,7 +340,7 @@ export async function POST(request: Request) {
         const titleLines = fit(productTitle(item), bold, 10.5, 254)
         const specifications = detailParts(item)
         const specLines = fit(specifications.join('  |  '), normal, 9.4, RIGHT - M - 22)
-        const height = Math.max(titleLines.length, 1) * 13.2 + specLines.length * 11.9 + (specLines.length ? 4 : 0) + 12
+        const height = Math.max(titleLines.length, 1) * 13.0 + specLines.length * 11.7 + (specLines.length ? 4 : 0) + 10
         prepared.push({ item, group, firstOfGroup: index === 0, titleLines, specLines, height })
       }
     }
@@ -316,7 +349,7 @@ export async function POST(request: Request) {
       const entry = prepared[index]
       const { item, group, titleLines, specLines } = entry
       const lastRow = index === prepared.length - 1
-      const groupGap = entry.firstOfGroup && index > 0 ? 8 : 0
+      const groupGap = entry.firstOfGroup && index > 0 ? 5 : 0
 
       // Alleen de laatste productpagina reserveert ruimte voor het totaalblok
       // en de praktische informatie. Andere pagina's mogen verder gevuld worden.
@@ -334,7 +367,7 @@ export async function POST(request: Request) {
 
       for (const titleLine of displayTitles) {
         text(titleLine, M + 10, y, 10.5, bold)
-        y -= 13.2
+        y -= 13.0
       }
 
       // Categorie in dezelfde regel als de productnaam, geen tweede balk erboven.
@@ -355,25 +388,42 @@ export async function POST(request: Request) {
       if (specLines.length) y -= 4
       for (const specification of specLines) {
         text(specification, M + 10, y, 9.4, normal, MUTED)
-        y -= 11.9
+        y -= 11.7
       }
 
       y -= 4
       horizontal(y, BEIGE, 0.5)
-      y -= 8
+      y -= 6
     }
 
-    // Bij geen producten blijft de samenvatting eveneens op een geldige positie.
-    // Na de laatste productregel kan de sluitsectie nooit over praktische info heen vallen.
-    if (y < CLOSING_MIN_Y) {
-      followingPage()
-      columnHeader()
+    // Bijzonderheden zijn optioneel en worden alleen op de offerte getoond als ze zijn ingevuld.
+    // Het tekstblok blijft samen en schuift zo nodig naar de volgende pagina.
+    if (specialNotes) {
+      const noteLines = fit(specialNotes.replace(/\r?\n/g, ' | '), normal, 9.6, RIGHT - M - 28)
+      const noteHeight = 31 + noteLines.length * 12.2
+      if (y - noteHeight < CLOSING_MIN_Y) {
+        followingPage()
+      } else {
+        y -= 12
+      }
+      page.drawRectangle({ x: M, y: y - noteHeight, width: RIGHT - M, height: noteHeight, color: PALE })
+      text('BIJZONDERHEDEN / MONTAGE', M + 13, y - 20, 10.0, bold, BROWN)
+      let noteY = y - 36
+      for (const note of noteLines) {
+        text(note, M + 13, noteY, 9.6, normal, DARK)
+        noteY -= 12.2
+      }
+      y -= noteHeight + 12
     }
 
-    page.drawRectangle({ x: M, y: y - 56, width: RIGHT - M, height: 56, color: BEIGE })
-    text('TOTAALBEDRAG', M + 16, y - 25, 11.4, bold, BROWN)
-    text('Inclusief btw', M + 16, y - 42, 9.6, normal, MUTED)
-    right(money(totalAmount), RIGHT - 16, y - 36, 19, bold, BROWN)
+    // Het totaal staat op dezelfde pagina als de vaste afsluiting.
+    if (y < CLOSING_MIN_Y) followingPage()
+
+    page.drawRectangle({ x: M, y: y - 56, width: RIGHT - M, height: 56, color: isExecutive ? BROWN : BEIGE })
+    const totalInk = isExecutive ? WHITE : BROWN
+    text('TOTAALBEDRAG', M + 16, y - 25, 11.4, bold, totalInk)
+    text('Inclusief btw', M + 16, y - 42, 9.6, normal, totalInk)
+    right(money(totalAmount), RIGHT - 16, y - 36, 19, bold, totalInk)
 
     // Vaste onderzone van de laatste pagina. De ruimte erboven blijft vrij
     // wanneer de offerte weinig producten bevat, zoals gevraagd.
@@ -394,23 +444,35 @@ export async function POST(request: Request) {
     text('30 dagen vanaf de offertedatum', leftX, 117, 9.8, normal)
     text('Na montage, tenzij anders afgesproken', rightX, 117, 9.1, normal)
 
+    // Compacte en consistente footer op alle pagina's. Drie vestigingsplaatsen op één rij.
     const pages = pdf.getPages()
     pages.forEach((p, index) => {
-      p.drawLine({ start: { x: M, y: 79 }, end: { x: RIGHT, y: 79 }, thickness: .65, color: GOLD })
-      const footer = [
-        'ELKO SOLUTIONS  |  MAATWERK ZONDER CONCESSIES',
-        `${COMPANY.site}  |  ${COMPANY.phone}  |  ${COMPANY.email}`,
-        COMPANY.address,
+      p.drawLine({ start: { x: M, y: 103 }, end: { x: RIGHT, y: 103 }, thickness: .8, color: GOLD })
+      const centerFooter = (content: string, py: number, size: number, font: PDFFont, ink: ReturnType<typeof rgb>) => {
+        const value = safe(content)
+        p.drawText(value, {
+          x: (W - font.widthOfTextAtSize(value, size)) / 2,
+          y: py, size, font, color: ink,
+        })
+      }
+      centerFooter('GEPASTE BELEVING OP IEDER VLAK', 87, 8.5, bold, GOLD)
+      centerFooter(`${COMPANY.site}  |  ${COMPANY.phone}  |  ${COMPANY.email}`, 72, 8.0, normal, MUTED)
+      centerFooter(`Hoofdkantoor: ${COMPANY.address}`, 58, 7.7, normal, MUTED)
+      const places = [
+        ['DEPENDANCE UTRECHT', 'Houten'],
+        ['DEPENDANCE NOORD-HOLLAND', 'Amstelveen'],
+        ['DEPENDANCE NOORD-BRABANT', 'Den Bosch'],
       ]
-      footer.forEach((content, n) => {
-        const font = n === 0 ? bold : normal
-        const size = n === 0 ? 8.5 : 8.0
-        const v = safe(content)
-        p.drawText(v, { x: (W - font.widthOfTextAtSize(v, size)) / 2, y: 63 - n * 12, size, font, color: n === 0 ? BROWN : MUTED })
+      const centers = [M + 87, W / 2, RIGHT - 87]
+      places.forEach(([label, city], i) => {
+        const headerWidth = bold.widthOfTextAtSize(label, 7.1)
+        const cityWidth = normal.widthOfTextAtSize(city, 8.1)
+        p.drawText(label, { x: centers[i] - headerWidth / 2, y: 40, size: 7.1, font: bold, color: BROWN })
+        p.drawText(city, { x: centers[i] - cityWidth / 2, y: 27, size: 8.1, font: normal, color: MUTED })
       })
       if (pages.length > 1) {
         const count = `${index + 1}/${pages.length}`
-        p.drawText(count, { x: RIGHT - normal.widthOfTextAtSize(count, 7.5), y: 32, size: 7.5, font: normal, color: MUTED })
+        p.drawText(count, { x: RIGHT - normal.widthOfTextAtSize(count, 7.5), y: 12, size: 7.5, font: normal, color: MUTED })
       }
     })
 
