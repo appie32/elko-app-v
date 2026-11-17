@@ -11,6 +11,8 @@ type Props = {
   quoteDate?: string
   contactPerson: string
   total: number
+  quoteStyle: 'executive' | 'signature'
+  installationNotes?: string
 }
 
 // De preview is dezelfde PDF als de download: één bron, identieke opmaak.
@@ -22,6 +24,8 @@ export default function QuotePreview({
   quoteDate,
   contactPerson,
   total,
+  quoteStyle,
+  installationNotes,
 }: Props) {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(true)
@@ -51,6 +55,8 @@ export default function QuotePreview({
             productLines: lines,
             totalAmount: total,
             contactPerson,
+            quoteStyle,
+            installationNotes: installationNotes || '',
           }),
         })
         if (!response.ok) {
@@ -68,12 +74,14 @@ export default function QuotePreview({
       }
     }
 
-    loadPdf()
+    // Voorkom een nieuwe PDF-aanvraag bij iedere toetsaanslag in het notitieveld.
+    const timer = window.setTimeout(loadPdf, 280)
     return () => {
+      window.clearTimeout(timer)
       active = false
       if (previewUrl) URL.revokeObjectURL(previewUrl)
     }
-  }, [customer, project, lines, quoteNumber, quoteDate, contactPerson, total])
+  }, [customer, project, lines, quoteNumber, quoteDate, contactPerson, total, quoteStyle, installationNotes])
 
   return (
     <section style={{ background: '#f7f4ef', border: '1px solid #e1d7ca', borderRadius: 12, padding: 12 }}>
