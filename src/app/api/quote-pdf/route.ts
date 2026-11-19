@@ -81,36 +81,60 @@ function productTitle(line: PdfLine): string {
   const title = valueOrBlank(line.product_type) || 'Maatwerkproduct'
   return title === 'Extra werkzaamheden' ? (valueOrBlank(line.execution_description) || title) : title
 }
-// Oudere productregels bevatten soms productkeuzes én montageafspraken in
-// hetzelfde beschrijvingsveld. Scheid die uitsluitend bij herkenbare montage-
-// instructies; de opgeslagen klant- en productgegevens blijven onaangetast.
+// V5: Houd technische productkeuzes en echte montageafspraken uit elkaar.
+// Dit verandert alleen de weergave; oorspronkelijke invoer blijft opgeslagen.
+function isPlaceholder(value: unknown): boolean {
+  const normalized = String(value ?? '').trim()
+    .replace(/^(?:(?:montage|montagewijze|montagepositie|plaatsing|uitvoering|opmerking|bijzonderheden|toelichting)\s*:\s*)/i, '')
+    .replace(/[\s.,;:!?-]+$/g, '')
+    .trim()
+  return /^(?:nog\s+te\s+bepalen|nader\s+te\s+bepalen|n\.?\s*t\.?\s*b\.?|onbekend|niet\s+bekend|n\.?\s*v\.?\s*t\.?|niet\s+van\s+toepassing)$/i.test(normalized)
+}
+
 function splitDescriptionAndMontage(input: unknown): { product: string; montage: string[] } {
   const source = String(input ?? '').trim()
   if (!source) return { product: '', montage: [] }
+
+  // Scheid montagezinnen van vrije producttekst als ze als aparte zin voorkomen.
   const normalized = source
-    .replace(/;\s*(?=(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b)/gi, ' | ')
-    .replace(/\.\s+(?=(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b)/gi, ' | ')
+    .replace(/[.;]\s+(?=(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b)/gi, ' | ')
+    .replace(/[.;]\s+(?=(?:eventueel|desgewenst|indien gewenst|mogelijk)\b)/gi, ' | ')
     .replace(/;\s*(?=(?:montage|montageafspraak|montage-instructie|demontage)\s*:)/gi, ' | ')
-  const parts = normalized.split(/\s*[|·]\s*|\r?\n/).map(s => s.trim()).filter(Boolean)
+  const sections = normalized.split(/\s*[|·]\s*|\r?\n/).map(v => v.trim()).filter(Boolean)
   const product: string[] = []
   const montage: string[] = []
-  let montageSection = false
-  for (const part of parts) {
-    const explicitMontage = /^(?:montage(?:wijze|afspraak|instructie|gegevens)?|demontage|plaatsing)\s*[:\-]/i.test(part)
-    const clearMontage = /^(?:(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b.*?\b(?:verwijderen|demonteren)|(?:we|wij)\s+(?:monteren|bevestigen|demonteren)|(?:bevestigen|bevestiging|monteren|demonteren|verwijderen)\s+(?:met|op|aan|in|de|het|een|bestaande)|(?:bij|op)\s+(?:houten|kunststof|aluminium)\s+kozijnen\b)/i.test(part)
-    const clearlyProduct = /^(?:profiel(?:kleur)?|gaas(?:type)?|doek(?:kleur)?|stof(?:kleur|collectie)?|onderprofiel|bediening|motor|afmetingen|maat|ruimte|kleur|RAL)\s*:/i.test(part)
-    if (explicitMontage || clearMontage || (montageSection && !clearlyProduct)) {
-      const cleaned = part.replace(/^(?:montage(?:wijze|afspraak|instructie|gegevens)?|demontage|plaatsing)\s*[:\-]\s*/i, '').trim()
-      if (cleaned) montage.push(cleaned)
-      montageSection = true
+
+  for (const part of sections) {
+    if (isPlaceholder(part)) continue
+    const label = part.match(/^(?:montage(?:wijze|positie|methode|plaats|afspraak|instructie|gegevens)?|demontage|plaatsing)\s*[:\-]\s*(.*)$/i)
+    const content = label ? label[1].trim() : part
+    if (!content || isPlaceholder(content)) continue
+
+    // 'Op de dag' is hier een plaatsingskeuze (voor/in het kozijn),
+    // niet 'montage op die dag'. Deze keuze hoort bij de productspecificaties.
+    const placementChoice = /^(?:(?:op|in|voor|achter)\s+(?:de\s+)?(?:dag|sponning|kozijn|nis)|(?:links|rechts|binnen|buiten))\.?$/i.test(content)
+    if (placementChoice) {
+      product.push(label ? `Montagepositie: ${content}` : `Montagepositie: ${content}`)
+      continue
+    }
+
+    const removal = /\b(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b.{0,160}\b(?:verwijderen|demonteren|weghalen)\b/i.test(content)
+    const magnetChange = /\b(?:magneetsluiting|magneetstrip|borstelstrip)\b.{0,180}\b(?:vervangen|aanpassen|monteren)\b|\b(?:vervangen|aanpassen)\b.{0,180}\b(?:magneetsluiting|magneetstrip|borstelstrip)\b/i.test(content)
+    const installationAction = /\b(?:wij|we)\s+(?:zullen\s+|kunnen\s+)?(?:monteren|bevestigen|demonteren|verwijderen|boren|schroeven)|\b(?:monteren|demonteren|bevestigen|verwijderen)\s+(?:met|op|aan|in|de|het|een|bestaande)|\b(?:met\s+)?(?:steiger|montagetape|bevestigingsschroeven)\s+(?:nodig|gebruiken|toepassen)/i.test(content)
+    const actualInstallationNote = removal || magnetChange || installationAction || /\bmontage\s+(?:in\s+overleg|volgens\s+afspraak|op\s+afspraak)\b/i.test(content)
+    // Een expliciet gelabelde lange instructie mag mee naar de montagezone,
+    // maar een korte keuze zoals 'montage: op de dag' nooit.
+    const explicitInstruction = !!label && /\b(?:verwijderen|vervangen|demonteren|monteren|bevestigen|schroeven|boren|afstemmen|overleg|plaatsen|tapen)\b/i.test(content)
+
+    if (actualInstallationNote || explicitInstruction) {
+      montage.push(content.replace(/[\s.;]+$/g, '').trim())
     } else {
+      // Bewaar twijfelgevallen als productspecificatie; geen informatie verliezen.
       product.push(part)
-      if (clearlyProduct) montageSection = false
     }
   }
   return { product: product.join(' | '), montage }
 }
-
 function detailParts(line: PdfLine): string[] {
   const o = line.product_options || {}
   const group = line.product_group || getGroupForProduct(line.product_type || '')
@@ -172,7 +196,8 @@ function detailParts(line: PdfLine): string[] {
       add('Bediening', o.operation)
     }
   }
-  add('', splitDescriptionAndMontage(line.customer_note).product)
+  const extraProductNote = splitDescriptionAndMontage(line.customer_note).product
+  if (extraProductNote && !isPlaceholder(extraProductNote)) add('', extraProductNote)
   return Array.from(new Set(parts))
 }
 function fit(text: unknown, font: PDFFont, size: number, width: number): string[] {
@@ -377,26 +402,37 @@ export async function POST(request: Request) {
       specTopGap: 2.4, topGap: 6, bottomGap: 5.5,
     }
 
-    // Montage-afspraken uit oude productbeschrijvingen worden samengevoegd met
-    // het optionele invoerveld 'Bijzonderheden / montage' uit de app.
-    const montageItems: string[] = []
-    const noteKeys = new Set<string>()
-    const addMontage = (value: string) => {
-      const trimmed = value.trim()
-      const key = trimmed.toLocaleLowerCase('nl-NL').replace(/\s+/g, ' ')
-      if (trimmed && !noteKeys.has(key)) { montageItems.push(trimmed); noteKeys.add(key) }
+    // Groepeer afspraken per product. Iedere productafspraak begint op een
+    // eigen regel; lange teksten mogen binnen die regel doorlopen.
+    type MontageRow = { lines: string[] }
+    const montageRows: MontageRow[] = []
+    const seenRows = new Set<string>()
+    function addMontageRow(label: string, notes: string[]) {
+      const usefulNotes = Array.from(new Set(notes
+        .map(note => note.trim())
+        .filter(note => note && !isPlaceholder(note))))
+      if (!usefulNotes.length) return
+      const combined = `${label}: ${usefulNotes.join('; ')}`
+      const key = combined.toLocaleLowerCase('nl-NL').replace(/\s+/g, ' ')
+      if (seenRows.has(key)) return
+      seenRows.add(key)
+      montageRows.push({ lines: fit(combined, normal, 9.2, RIGHT - M - 26) })
     }
     for (const line of sorted) {
       const remarks = [
         ...splitDescriptionAndMontage(line.execution_description).montage,
         ...splitDescriptionAndMontage(line.customer_note).montage,
       ]
-      for (const remark of remarks) addMontage(`${productTitle(line)}: ${remark}`)
+      addMontageRow(productTitle(line), remarks)
     }
-    if (specialNotes) addMontage(specialNotes.replace(/\r?\n/g, ' | '))
-    const montageText = montageItems.join('  |  ')
-    const montageLines = montageText ? fit(montageText, normal, 9.2, RIGHT - M - 26) : []
-    const montageHeight = montageLines.length ? 22 + montageLines.length * 10.9 : 0
+    if (specialNotes) {
+      const customNotes = specialNotes.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+      addMontageRow('Overige afspraken', customNotes)
+    }
+    // Afstanden en het gemeten montageblok gebruiken exact dezelfde rijen.
+    const montageHeight = montageRows.length
+      ? 22 + montageRows.reduce((sum, row) => sum + row.lines.length * 10.9 + 3, 0)
+      : 0
     // De onderkant van het totaal en het montageblok moeten boven de
     // praktische informatie blijven, ook met 5 of 6 productregels.
     const CLOSING_MIN_Y = PRACTICAL_TITLE_Y + 12 + TOTAL_HEIGHT +
@@ -514,14 +550,17 @@ export async function POST(request: Request) {
     right(money(totalAmount), RIGHT - 16, y - 32, 19, bold, totalInk)
     y -= TOTAL_HEIGHT
 
-    if (montageLines.length) {
+    if (montageRows.length) {
       y -= 6
       horizontal(y, GOLD, 0.55)
       text('MONTAGE / BIJZONDERHEDEN', M + 2, y - 15, 9.3, bold, BROWN)
       let noteY = y - 28
-      for (const line of montageLines) {
-        text(line, M + 2, noteY, 9.2, normal, DARK)
-        noteY -= 10.9
+      for (const row of montageRows) {
+        for (const line of row.lines) {
+          text(line, M + 2, noteY, 9.2, normal, DARK)
+          noteY -= 10.9
+        }
+        noteY -= 3 // compacte tussenruimte tussen verschillende producten
       }
       y -= montageHeight
     }
