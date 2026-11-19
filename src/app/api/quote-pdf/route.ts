@@ -81,6 +81,36 @@ function productTitle(line: PdfLine): string {
   const title = valueOrBlank(line.product_type) || 'Maatwerkproduct'
   return title === 'Extra werkzaamheden' ? (valueOrBlank(line.execution_description) || title) : title
 }
+// Oudere productregels bevatten soms productkeuzes én montageafspraken in
+// hetzelfde beschrijvingsveld. Scheid die uitsluitend bij herkenbare montage-
+// instructies; de opgeslagen klant- en productgegevens blijven onaangetast.
+function splitDescriptionAndMontage(input: unknown): { product: string; montage: string[] } {
+  const source = String(input ?? '').trim()
+  if (!source) return { product: '', montage: [] }
+  const normalized = source
+    .replace(/;\s*(?=(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b)/gi, ' | ')
+    .replace(/\.\s+(?=(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b)/gi, ' | ')
+    .replace(/;\s*(?=(?:montage|montageafspraak|montage-instructie|demontage)\s*:)/gi, ' | ')
+  const parts = normalized.split(/\s*[|·]\s*|\r?\n/).map(s => s.trim()).filter(Boolean)
+  const product: string[] = []
+  const montage: string[] = []
+  let montageSection = false
+  for (const part of parts) {
+    const explicitMontage = /^(?:montage(?:wijze|afspraak|instructie|gegevens)?|demontage|plaatsing)\s*[:\-]/i.test(part)
+    const clearMontage = /^(?:(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b.*?\b(?:verwijderen|demonteren)|(?:we|wij)\s+(?:monteren|bevestigen|demonteren)|(?:bevestigen|bevestiging|monteren|demonteren|verwijderen)\s+(?:met|op|aan|in|de|het|een|bestaande)|(?:bij|op)\s+(?:houten|kunststof|aluminium)\s+kozijnen\b)/i.test(part)
+    const clearlyProduct = /^(?:profiel(?:kleur)?|gaas(?:type)?|doek(?:kleur)?|stof(?:kleur|collectie)?|onderprofiel|bediening|motor|afmetingen|maat|ruimte|kleur|RAL)\s*:/i.test(part)
+    if (explicitMontage || clearMontage || (montageSection && !clearlyProduct)) {
+      const cleaned = part.replace(/^(?:montage(?:wijze|afspraak|instructie|gegevens)?|demontage|plaatsing)\s*[:\-]\s*/i, '').trim()
+      if (cleaned) montage.push(cleaned)
+      montageSection = true
+    } else {
+      product.push(part)
+      if (clearlyProduct) montageSection = false
+    }
+  }
+  return { product: product.join(' | '), montage }
+}
+
 function detailParts(line: PdfLine): string[] {
   const o = line.product_options || {}
   const group = line.product_group || getGroupForProduct(line.product_type || '')
@@ -90,7 +120,7 @@ function detailParts(line: PdfLine): string[] {
   if (line.width_mm && line.height_mm) parts.push(`Afmetingen: ${line.width_mm} x ${line.height_mm} mm`)
 
   // Bewaar handmatig geschreven uitvoeringsspecificaties en toon geen lege keuzevelden.
-  const rawDescription = String(line.execution_description || '')
+  const rawDescription = splitDescriptionAndMontage(line.execution_description).product
   if (rawDescription && line.product_type !== 'Extra werkzaamheden') {
     for (const section of rawDescription.split(/\s*[|·]\s*/).map(p => p.trim()).filter(Boolean)) {
       if (/\b(?:nog te bepalen|n\.t\.b\.)\b/i.test(section)) continue
@@ -142,7 +172,7 @@ function detailParts(line: PdfLine): string[] {
       add('Bediening', o.operation)
     }
   }
-  add('', line.customer_note)
+  add('', splitDescriptionAndMontage(line.customer_note).product)
   return Array.from(new Set(parts))
 }
 function fit(text: unknown, font: PDFFont, size: number, width: number): string[] {
@@ -310,7 +340,7 @@ export async function POST(request: Request) {
     const allRaamhorren = productLines.length > 0 && productLines.every((item: PdfLine) => /raamhor|inzet.*hor/i.test(item.product_type || ''))
     text(allRaamhorren ? 'MAATWERK RAAMHORREN' : 'PRODUCTEN EN UITVOERINGEN', M, y, 12.8, bold, BROWN)
     y -= 16
-    text('Afmetingen: breedte x hoogte in mm. Alle bedragen zijn inclusief btw.', M, y, 9.6, normal, MUTED)
+    text('Inclusief inmeten, levering en vakkundige montage.', M, y, 9.6, normal, MUTED)
     y -= 12
     columnHeader()
 
@@ -321,14 +351,11 @@ export async function POST(request: Request) {
       const key = GROUPS.includes(raw) ? raw : 'Overig'
       map.set(key, [...(map.get(key) || []), item])
     }
-    // V3: geen blokkop voor elke productgroep en geen twee kolommen met specificaties.
-    // Een product heeft één duidelijke titel; de groep wordt er klein naast vermeld.
-    // Specificaties lopen onder de titel over vrijwel de volledige paginabreedte.
-    // Totaal en praktische informatie staan samen op de laatste pagina.
-    // Onderaan moet het totaalvak boven de praktische informatie blijven.
-    // De footer is nu compacter, zodat vijf normale productregels op A4 passen.
-    const CLOSING_MIN_Y = 267 // compact totaalvak eindigt altijd boven het informatieblok
+    // V4: de montage-afspraken staan na het totaal in een eigen blok.
+    // Alle productregels krijgen subtiel afwisselend een witte of grijze achtergrond.
     const CONTINUATION_MIN_Y = 90
+    const PRACTICAL_TITLE_Y = 175 // vast blok; footer blijft altijd vrij
+    const TOTAL_HEIGHT = 48
 
     type PreparedRow = {
       item: PdfLine
@@ -339,29 +366,41 @@ export async function POST(request: Request) {
       height: number
     }
 
-    // Eerst meten, dan tekenen: bij een volle A4 iets compacter zetten,
-    // zonder productinformatie weg te laten of het lettertype onleesbaar te maken.
     const normalLayout = {
-      titleFontSize: 10.4, titleLeading: 12.5,
-      specFontSize: 9.3, specLeading: 11.2,
-      specTopGap: 2.8, topGap: 7, bottomGap: 7,
+      titleFontSize: 10.4, titleLeading: 12.8,
+      specFontSize: 9.3, specLeading: 11.4,
+      specTopGap: 3.0, topGap: 8, bottomGap: 8,
     }
     const compactLayout = {
       titleFontSize: 10.2, titleLeading: 12.1,
       specFontSize: 9.1, specLeading: 10.4,
       specTopGap: 2.4, topGap: 6, bottomGap: 5.5,
     }
-    const noteLines = specialNotes
-      ? fit(specialNotes.replace(/\r?\n/g, ' | '), normal, 9.6, RIGHT - M - 28)
-      : []
-    // Korte montage-afspraken in een klein kader; lange teksten mogen doorlopen
-    // naar een tweede pagina zonder overlappingen.
-    const shortNote = noteLines.length > 0 && noteLines.length <= 2
-    const noteHeight = noteLines.length
-      ? (shortNote ? 19 + noteLines.length * 11 : 31 + noteLines.length * 12.2)
-      : 0
-    const noteOuterGap = shortNote ? 8 : 24
-    const noteReserve = noteHeight ? noteHeight + noteOuterGap : 0
+
+    // Montage-afspraken uit oude productbeschrijvingen worden samengevoegd met
+    // het optionele invoerveld 'Bijzonderheden / montage' uit de app.
+    const montageItems: string[] = []
+    const noteKeys = new Set<string>()
+    const addMontage = (value: string) => {
+      const trimmed = value.trim()
+      const key = trimmed.toLocaleLowerCase('nl-NL').replace(/\s+/g, ' ')
+      if (trimmed && !noteKeys.has(key)) { montageItems.push(trimmed); noteKeys.add(key) }
+    }
+    for (const line of sorted) {
+      const remarks = [
+        ...splitDescriptionAndMontage(line.execution_description).montage,
+        ...splitDescriptionAndMontage(line.customer_note).montage,
+      ]
+      for (const remark of remarks) addMontage(`${productTitle(line)}: ${remark}`)
+    }
+    if (specialNotes) addMontage(specialNotes.replace(/\r?\n/g, ' | '))
+    const montageText = montageItems.join('  |  ')
+    const montageLines = montageText ? fit(montageText, normal, 9.2, RIGHT - M - 26) : []
+    const montageHeight = montageLines.length ? 22 + montageLines.length * 10.9 : 0
+    // De onderkant van het totaal en het montageblok moeten boven de
+    // praktische informatie blijven, ook met 5 of 6 productregels.
+    const CLOSING_MIN_Y = PRACTICAL_TITLE_Y + 12 + TOTAL_HEIGHT +
+      (montageHeight ? 6 + montageHeight + 8 : 0)
 
     function prepareRows(layout: typeof normalLayout): PreparedRow[] {
       const result: PreparedRow[] = []
@@ -383,7 +422,7 @@ export async function POST(request: Request) {
     const normalRows = prepareRows(normalLayout)
     const normalRowsHeight = normalRows.reduce((height, row, index) =>
       height + row.height + (row.firstOfGroup && index > 0 ? 3 : 0), 0)
-    const useCompactLayout = y - normalRowsHeight - noteReserve < CLOSING_MIN_Y
+    const useCompactLayout = y - normalRowsHeight < CLOSING_MIN_Y
     const rowLayout = useCompactLayout ? compactLayout : normalLayout
     const prepared = useCompactLayout ? prepareRows(compactLayout) : normalRows
 
@@ -393,14 +432,14 @@ export async function POST(request: Request) {
     const measureRange = (start: number, end: number) =>
       prepared.slice(start, end).reduce((sum, row, relativeIndex) =>
         sum + row.height + (row.firstOfGroup && relativeIndex > 0 ? 3 : 0), 0)
-    const wholeQuoteFits = y - measureRange(0, prepared.length) - noteReserve >= CLOSING_MIN_Y
+    const wholeQuoteFits = y - measureRange(0, prepared.length) >= CLOSING_MIN_Y
     let plannedBreakIndex = -1
     if (!wholeQuoteFits && prepared.length >= 4) {
       const breakAt = prepared.length - 2
       const firstPageAfter = y - measureRange(0, breakAt)
       const secondPageAfter = (H - 80 - 35) - measureRange(breakAt, prepared.length)
       if (firstPageAfter >= CONTINUATION_MIN_Y &&
-          secondPageAfter - noteReserve >= CLOSING_MIN_Y) {
+          secondPageAfter >= CLOSING_MIN_Y) {
         plannedBreakIndex = breakAt
       }
     }
@@ -414,7 +453,7 @@ export async function POST(request: Request) {
       // Alleen de laatste productpagina reserveert ruimte voor het totaalblok
       // en de praktische informatie. Andere pagina's mogen verder gevuld worden.
       // De laatste rij moet óók ruimte overlaten voor de optionele montagenotitie.
-      const minY = lastRow ? CLOSING_MIN_Y + noteReserve : CONTINUATION_MIN_Y
+      const minY = lastRow ? CLOSING_MIN_Y : CONTINUATION_MIN_Y
       const needsNewPage = index === plannedBreakIndex ||
         y - groupGap - entry.height < minY
       if (needsNewPage) {
@@ -464,38 +503,31 @@ export async function POST(request: Request) {
 
     }
 
-    // Bijzonderheden zijn optioneel en worden alleen op de offerte getoond als ze zijn ingevuld.
-    // Het tekstblok blijft samen en schuift zo nodig naar de volgende pagina.
-    if (specialNotes) {
-      if (y - noteHeight - noteOuterGap < CLOSING_MIN_Y) {
-        followingPage()
-      } else {
-        y -= noteOuterGap / 2
-      }
-      page.drawRectangle({ x: M, y: y - noteHeight, width: RIGHT - M, height: noteHeight, color: PALE })
-      text('BIJZONDERHEDEN / MONTAGE', M + 13, y - (shortNote ? 12 : 20), shortNote ? 9.1 : 10, bold, BROWN)
-      let noteY = y - (shortNote ? 25 : 36)
-      for (const note of noteLines) {
-        text(note, M + 13, noteY, shortNote ? 8.9 : 9.6, normal, DARK)
-        noteY -= shortNote ? 11 : 12.2
-      }
-      y -= noteHeight + noteOuterGap / 2
-    }
-
-    // Het totaal staat op dezelfde pagina als de vaste afsluiting.
+    // Het totaal staat direct onder de producten.
+    // Erna volgt alléén indien nodig het aparte blok Montage / bijzonderheden.
     if (y < CLOSING_MIN_Y) followingPage()
 
-    page.drawRectangle({ x: M, y: y - 52, width: RIGHT - M, height: 52, color: isExecutive ? BROWN : BEIGE })
+    page.drawRectangle({ x: M, y: y - TOTAL_HEIGHT, width: RIGHT - M, height: TOTAL_HEIGHT, color: isExecutive ? BROWN : BEIGE })
     const totalInk = isExecutive ? WHITE : BROWN
-    text('TOTAALBEDRAG', M + 16, y - 22, 11.4, bold, totalInk)
-    text('Inclusief btw', M + 16, y - 38, 9.6, normal, totalInk)
-    right(money(totalAmount), RIGHT - 16, y - 33, 19, bold, totalInk)
+    const totalLabelInk = isExecutive ? GOLD : GOLD_INK
+    text('TOTAAL INCLUSIEF BTW', M + 16, y - 30, 11.0, bold, totalLabelInk)
+    right(money(totalAmount), RIGHT - 16, y - 32, 19, bold, totalInk)
+    y -= TOTAL_HEIGHT
 
-    // Praktische informatie compact onder het totaal; de vier afspraken blijven leesbaar.
-    // Bij y>=267 en 52 pt hoogte eindigt het totaal bij minimaal 215, boven het vaste blok (top 210).
-    page.drawRectangle({ x: M, y: 187, width: RIGHT - M, height: 23, color: PALE })
-    text('INCLUSIEF INMETEN, LEVERING EN VAKKUNDIGE MONTAGE', M + 12, 195.2, 9.2, bold, BROWN)
+    if (montageLines.length) {
+      y -= 6
+      horizontal(y, GOLD, 0.55)
+      text('MONTAGE / BIJZONDERHEDEN', M + 2, y - 15, 9.3, bold, BROWN)
+      let noteY = y - 28
+      for (const line of montageLines) {
+        text(line, M + 2, noteY, 9.2, normal, DARK)
+        noteY -= 10.9
+      }
+      y -= montageHeight
+    }
 
+    // Praktische informatie heeft een vaste positie; bij een montageblok
+    // reserveert de paginatechniek voldoende ruimte tussen het totaal en de footer.
     text('PRAKTISCHE INFORMATIE', M, 175, 11.0, bold, BROWN)
     horizontal(165)
 
@@ -522,8 +554,8 @@ export async function POST(request: Request) {
         })
       }
       centerFooter('GEPASTE BELEVING OP IEDER VLAK', 66, 8.5, bold, GOLD_INK)
-      centerFooter(`${COMPANY.site}  |  ${COMPANY.phone}  |  ${COMPANY.email}`, 52, 8.0, normal, MUTED)
-      centerFooter(`Hoofdkantoor: ${COMPANY.address}`, 39, 7.7, normal, MUTED)
+      centerFooter(`${COMPANY.site}  |  ${COMPANY.phone}  |  ${COMPANY.email}`, 52, 8.2, normal, MUTED)
+      centerFooter(`Hoofdkantoor: ${COMPANY.address}`, 39, 7.9, normal, MUTED)
       const places = [
         ['DEPENDANCE UTRECHT', 'Houten'],
         ['DEPENDANCE NOORD-HOLLAND', 'Amstelveen'],
@@ -531,10 +563,10 @@ export async function POST(request: Request) {
       ]
       const centers = [M + 87, W / 2, RIGHT - 87]
       places.forEach(([label, city], i) => {
-        const headerWidth = bold.widthOfTextAtSize(label, 7.1)
-        const cityWidth = normal.widthOfTextAtSize(city, 8.1)
-        p.drawText(label, { x: centers[i] - headerWidth / 2, y: 24, size: 7.1, font: bold, color: BROWN })
-        p.drawText(city, { x: centers[i] - cityWidth / 2, y: 12, size: 8.1, font: normal, color: MUTED })
+        const headerWidth = bold.widthOfTextAtSize(label, 7.3)
+        const cityWidth = normal.widthOfTextAtSize(city, 8.3)
+        p.drawText(label, { x: centers[i] - headerWidth / 2, y: 24, size: 7.3, font: bold, color: BROWN })
+        p.drawText(city, { x: centers[i] - cityWidth / 2, y: 12, size: 8.3, font: normal, color: MUTED })
       })
       if (pages.length > 1) {
         const count = `${index + 1}/${pages.length}`
