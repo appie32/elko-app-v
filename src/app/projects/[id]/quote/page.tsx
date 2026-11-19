@@ -32,11 +32,17 @@ const people = ['Alexa', 'Manuela', 'Abdullah']
 const earlyStatuses = ['Nieuwe aanvraag', 'Inmeting gepland', 'Ingemeten', 'Offerte gemaakt']
 const offerStatuses = [...earlyStatuses, 'Offerte verzonden']
 
-function makeQuoteNumber(): string {
-  // Uniek en blijvend nummer, onafhankelijk van downloads. Nog niet oplopend.
+function makeQuoteNumber(customer: Customer, project: Project): string {
+  // Alleen voor NIEUWE offertes: jaartal, postcode en huisnummer, met een
+  // unieke toevoeging. Opgeslagen offertenummers wijzigen nooit.
   const year = new Date().getFullYear()
-  const unique = crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()
-  return `ELKO-${year}-${unique}`
+  const postcode = String(customer.postal_code || project.postal_code || '')
+    .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
+  const houseNumber = String(customer.house_number || '')
+    .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)
+  const unique = crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase()
+  if (!postcode || !houseNumber) return `ELKO-${year}-${unique}`
+  return `ELKO-${year}-${postcode}-${houseNumber}-${unique}`
 }
 
 function dateNL(value: string | null | undefined): string {
@@ -149,7 +155,7 @@ export default function QuotePage() {
     for (let attempt = 0; attempt < 3; attempt++) {
       const { data, error: dbError } = await supabase.from('quotes').insert({
         project_id: project.id,
-        quote_number: makeQuoteNumber(),
+        quote_number: makeQuoteNumber(customer, project),
         total_amount: total,
         customer_snapshot: customer,
         project_snapshot: snapshot,
