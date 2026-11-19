@@ -8,6 +8,17 @@ export const PRODUCT_TYPES = [
   'Overig',
 ]
 
+export const DOOR_PRODUCT_TYPES = [
+  'Enkele plissé hordeur',
+  'Dubbele plissé hordeur',
+  'Schuifpui plissé hordeur',
+]
+
+export const WINDOW_PRODUCT_TYPES = [
+  'Raamhor op maat',
+  'Klik-plissé raamhor',
+]
+
 export const PROJECT_STATUSES = [
   'Nieuwe aanvraag',
   'Inmeting gepland',
@@ -34,10 +45,11 @@ export const SOURCES = [
   'Anders',
 ]
 
-export const COLOR_CATEGORIES = [
-  'Standaardkleur',
+export const PROFILE_COLORS = [
+  'Wit',
+  'Antraciet',
+  'Bruin',
   'RAL-kleur op maat',
-  'Anders / nader bepalen',
 ]
 
 export const STANDARD_COLORS = [
@@ -51,15 +63,23 @@ export const MESH_TYPES = [
   'Premium horgaas / anti-pollen gaas',
 ]
 
-export const BOTTOM_PROFILES = [
+export const BOTTOM_PROFILE_COLORS = [
   'Wit',
   'Zwart',
-  'Laag onderprofiel',
-  'Geen onderprofiel',
-  'Nader bepalen tijdens montage',
+  'Aluminium',
+]
+
+export const MOUNTING_METHODS = [
+  'In de dag',
+  'Op de dag',
+  'Op kozijn',
+  'Tussen kozijn',
+  'Nader bepalen',
+  'Anders',
 ]
 
 export const PHOTO_TYPES = [
+  'Inmeting',
   'Overzicht',
   'Raam',
   'Deur',
@@ -71,18 +91,16 @@ export const PHOTO_TYPES = [
   'Anders',
 ]
 
-
-export const APPOINTMENT_TYPES = [
-  'Inmeting',
-  'Montage',
-  'Service',
-  'Controle',
-  'Telefonisch contact',
+// Oude exports blijven bestaan voor bestaande pagina's/imports.
+export const COLOR_CATEGORIES = [
+  'Standaardkleur',
+  'RAL-kleur op maat',
+  'Anders / nader bepalen',
 ]
 
-export const APPOINTMENT_STATUSES = [
-  'Gepland',
-  'Bevestigd',
-  'Uitgevoerd',
-  'Geannuleerd',
+export const BOTTOM_PROFILES = [
+  'Wit',
+  'Zwart',
+  'Aluminium',
+  'Niet van toepassing',
 ]

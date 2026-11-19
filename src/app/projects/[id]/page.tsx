@@ -5,6 +5,8 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase/client'
 import { formatEuro } from '@/lib/quote'
+import WorkflowSteps from '@/components/WorkflowSteps'
+import { nextProjectAction } from '@/lib/workflow'
 import type { Customer, ProductLine, Project } from '@/lib/types'
 
 const statuses = [
@@ -62,6 +64,17 @@ export default function ProjectDetailPage() {
     setSaving(false)
   }
 
+  async function finishMeasurement() {
+    if (!project || saving) return
+    if (!lines.length) { setMessage('Voeg eerst minimaal één ingemeten productregel toe.'); return }
+    if (!window.confirm('Zijn de maten en productkeuzes gecontroleerd? Markeer de inmeting dan als afgerond.')) return
+    setSaving(true)
+    const { error } = await supabase.from('projects').update({ status: 'Ingemeten' }).eq('id', project.id)
+    if (error) setMessage(`Inmeting afronden mislukt: ${error.message}`)
+    else { setProject({ ...project, status: 'Ingemeten' }); setSelectedStatus('Ingemeten'); setMessage('Inmeting afgerond. Je kunt nu een offerte maken.') }
+    setSaving(false)
+  }
+
   async function duplicateLine(line: ProductLine, event: React.MouseEvent<HTMLButtonElement>) {
     event.stopPropagation()
     const copy: any = { ...line }
@@ -93,6 +106,23 @@ export default function ProjectDetailPage() {
       <div className="card">
         <h1>{project.project_name}</h1>
         <p className="muted">{customer?.customer_name || 'Klant'} · {project.city} · {project.status}</p>
+        <WorkflowSteps status={project.status}/>
+        <div style={{padding:14,marginBottom:14,background:'#f6f1e8',border:'1px solid #d9c9ac',borderRadius:10}}>
+          <strong>Volgende stap: {nextProjectAction(project.status).label}</strong>
+          <p className="muted" style={{margin:'5px 0 10px'}}>Van aanvraag naar inmeting, offerte, bestelling en montage.</p>
+          <div className="row">
+            {nextProjectAction(project.status).action === 'appointment' &&
+              <Link className="button" href={`/projects/${project.id}/appointments/new`}>{nextProjectAction(project.status).label}</Link>}
+            {nextProjectAction(project.status).action === 'measure' &&
+              <Link className="button" href={`/projects/${project.id}/product-lines/new`}>Product inmeten</Link>}
+            {nextProjectAction(project.status).action === 'quote' &&
+              <Link className="button" href={`/projects/${project.id}/quote`}>{nextProjectAction(project.status).label}</Link>}
+            {nextProjectAction(project.status).action === 'photos' &&
+              <Link className="button" href={`/projects/${project.id}/photos`}>Montagefoto's</Link>}
+            {['Nieuwe aanvraag','Inmeting gepland','Ingemeten'].includes(project.status) &&
+              <button className="button secondary" disabled={saving || !lines.length || project.status==='Ingemeten'} onClick={finishMeasurement}>Inmeting afronden</button>}
+          </div>
+        </div>
         <div className="grid grid-2" style={{ marginTop: 18, marginBottom: 18 }}>
           <label>Projectstatus
             <select value={selectedStatus} onChange={(event) => { setSelectedStatus(event.target.value); setMessage('') }}>
@@ -110,7 +140,7 @@ export default function ProjectDetailPage() {
         <div className="row">
           <Link className="button" href={`/projects/${project.id}/product-lines/new`}>Productregel toevoegen</Link>
           <Link className="button secondary" href={`/projects/${project.id}/quote`}>Offerte maken</Link>
-          <Link className="button secondary" href={`/projects/${project.id}/photos`}>Foto&apos;s</Link>
+          <Link className="button secondary" href={`/projects/${project.id}/photos`}>Foto&apos;s / inmeetalbum</Link>
           <Link className="button secondary" href={`/projects/${project.id}/appointments/new`}>Afspraak toevoegen</Link>
           <Link className="button secondary" href="/projects">Alle projecten</Link>
         </div>

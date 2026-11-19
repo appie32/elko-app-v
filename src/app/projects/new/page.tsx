@@ -50,6 +50,11 @@ export default function NewProjectPage() {
         return
       }
       setCustomers((data || []) as Customer[])
+      const preferredCustomer = new URLSearchParams(window.location.search).get('customer')
+      if (preferredCustomer && (data || []).some(c => c.id === preferredCustomer)) {
+        setMode('existing')
+        setProject(previous => ({ ...previous, customer_id: preferredCustomer }))
+      }
       setCustomersError('')
     }
     load()
@@ -118,7 +123,7 @@ export default function NewProjectPage() {
         customerId = data.id
         setCreatedCustomerId(customerId) // avoid duplicate customer if project insertion fails
       }
-      const projectName = project.project_name.trim() || `Horren ${currentCustomer.customer_name}`
+      const projectName = project.project_name.trim() || `Maatwerk ${currentCustomer.customer_name}`
       const { data, error } = await supabase.from('projects').insert({
         customer_id: customerId,
         project_name: projectName,
@@ -140,7 +145,10 @@ export default function NewProjectPage() {
   return (
     <div className="card">
       <h1>Nieuw project</h1>
-      <p className="muted">Gebruik het bestaande klantadres, of vink een afwijkend projectadres aan.</p>
+      <p className="muted">Start een aanvraag met een bestaande of nieuwe klant. Daarna plan je de inmeting, voeg je producten toe en stel je de offerte op.</p>
+      <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginBottom:18 }}>
+        {['1. Klant','2. Project','3. Inmeting plannen','4. Offerte maken'].map((step,index)=><span key={step} style={{fontSize:12,padding:'8px 11px',borderRadius:20,border:'1px solid #d2c7b6',background:index<2?'#F4EBDD':'#FAF9F6'}}>{step}</span>)}
+      </div>
 
       <div className="row" style={{ marginBottom: 18 }}>
         <button type="button" className={mode === 'existing' ? 'button' : 'button secondary'} onClick={() => { setMode('existing'); setDifferentAddress(false); setMessage('') }}>Bestaande klant</button>
@@ -178,6 +186,7 @@ export default function NewProjectPage() {
       )}
 
       <h2>Projectgegevens</h2>
+      <p className="muted">Nieuwe projecten starten standaard met ‘Nieuwe aanvraag’. Na opslaan kun je direct de inmeting plannen.</p>
       <div className="grid grid-2">
         <label>Projectnaam <input value={project.project_name} onChange={(e) => updateProject('project_name', e.target.value)} placeholder="Bijv. Horren woning Leerdam" /></label>
         <label>Status <select value={project.status} onChange={(e) => updateProject('status', e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>

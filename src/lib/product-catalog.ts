@@ -87,6 +87,7 @@ export const PROFILE_COLORS = [
 export type ProductOptions = {
   profile_color?: string
   profile_width?: string
+  profile_finish?: string
   mesh_type?: string
   bottom_profile_type?: string
   bottom_profile_color?: string
@@ -107,7 +108,7 @@ export type ProductOptions = {
 export function startingOptions(): ProductOptions {
   return {
     profile_color: 'Wit — RAL 9016',
-    profile_width: 'Standaard profiel 4 cm',
+    profile_width: 'Breed profiel 4 cm', profile_finish: 'Mat',
     mesh_type: 'Standaard horgaas',
     bottom_profile_type: 'Laag onderprofiel',
     bottom_profile_color: 'Wit',
@@ -129,6 +130,27 @@ export function suggestedPrice(name: string): number | null {
   return prices[name] ?? null
 }
 
+/** Product-specifieke profielkeuze: geen misleidende 3/4 cm-optie bij andere systemen. */
+export function profileWidthMode(name: string): 'select' | 'fixed4' | 'none' {
+  if (['Opbouw plissé raamhor','Duo opbouw plissé raamhor','Dakraamhor',
+    'Plissé in frame','Plissé & hor','Veranda plissé','Dakraam plissé'].includes(name)) return 'select'
+  if (['Enkele plissé hordeur','Dubbele plissé hordeur'].includes(name)) return 'fixed4'
+  return 'none'
+}
+
+export function hasProfileFinish(name: string): boolean {
+  return getGroupForProduct(name) === 'Horren' || profileWidthMode(name) !== 'none'
+}
+
+export function preferredProfileWidth(name: string): string {
+  return profileWidthMode(name) === 'fixed4' ? 'Breed profiel 4 cm'
+    : profileWidthMode(name) === 'select' ? 'Breed profiel 4 cm' : ''
+}
+
+function isSpecified(value: unknown): value is string {
+  return typeof value === 'string' && !!value.trim() && !/^(nog te bepalen|n\.?t\.?b\.?|geen)$/i.test(value.trim())
+}
+
 export function buildProductDescription(input: {
   product: string
   room: string
@@ -141,41 +163,54 @@ export function buildProductDescription(input: {
   if (product === 'Extra werkzaamheden' || product === 'Overig') return o.notes_extra?.trim() || product
   const group = getGroupForProduct(product)
   const details: string[] = []
-  if (room.trim()) details.push(`Ruimte: ${room.trim()}`)
+  const add = (label: string, value?: string) => {
+    if (isSpecified(value)) details.push(`${label}: ${value.trim()}`)
+  }
+  add('Ruimte', room)
   if (width && height) details.push(`Maat: ${width} × ${height} mm`)
+  const color = o.profile_color === 'RAL-kleur op maat'
+    ? (ralCode.trim() ? `RAL ${ralCode.replace(/RAL\s*/i,'').trim()}` : '') : (o.profile_color || '')
   if (group === 'Horren') {
-    const color = o.profile_color === 'RAL-kleur op maat' ? (ralCode || 'eigen RAL-kleur') : (o.profile_color || '')
-    if (color) details.push(`Profielkleur: ${color}`)
-    if (o.profile_width) details.push(`Profiel: ${o.profile_width}`)
-    if (usesMesh(product) && o.mesh_type) details.push(`Gaas: ${o.mesh_type}`)
+    add('Profielkleur', color)
+    if (hasProfileFinish(product)) add('Afwerking', o.profile_finish)
+    if (profileWidthMode(product) === 'select') add('Profiel', o.profile_width)
+    if (profileWidthMode(product) === 'fixed4') details.push('Profiel: 4 cm')
+    if (usesMesh(product)) add('Gaas', o.mesh_type)
     if (isHorDoor(product)) {
-      details.push(`Onderprofiel: ${o.bottom_profile_type || 'nog te bepalen'} (${o.bottom_profile_color || 'kleur n.t.b.'})`)
+      add('Onderprofiel', o.bottom_profile_type)
+      add('Onderprofielkleur', o.bottom_profile_color)
     }
-    if (product === 'Duo opbouw plissé raamhor' && o.light_control) details.push(`Stof: ${o.light_control}`)
-    if (product === 'Duo opbouw plissé raamhor' && o.fabric_color) details.push(`Stofkleur: ${o.fabric_color}`)
+    if (product === 'Duo opbouw plissé raamhor') {
+      add('Stofuitvoering', o.light_control)
+      add('Stofkleur', o.fabric_color)
+    }
   }
   if (group === 'Plisségordijnen') {
-    if (o.fabric_color) details.push(`Stofkleur: ${o.fabric_color}`)
-    if (o.fabric_type) details.push(`Stof/collectie: ${o.fabric_type}`)
-    if (o.light_control) details.push(`Lichtregeling: ${o.light_control}`)
-    if (o.operation) details.push(`Bediening: ${o.operation}`)
-    if (o.mounting) details.push(`Montage: ${o.mounting}`)
-    if (product === 'Plissé & hor' && o.mesh_type) details.push(`Gaas: ${o.mesh_type}`)
+    if (profileWidthMode(product) !== 'none') {
+      add('Profielkleur', color)
+      add('Afwerking', o.profile_finish)
+      add('Profiel', o.profile_width)
+    }
+    add('Stof/collectie', o.fabric_type)
+    add('Stofkleur / kleurnummer', o.fabric_color)
+    add('Lichtregeling', o.light_control)
+    add('Bediening', o.operation)
+    add('Montagewijze', o.mounting)
+    if (product === 'Plissé & hor') add('Gaas', o.mesh_type)
   }
   if (group === 'Screens' || group === 'Rolluiken') {
-    const color = o.profile_color === 'RAL-kleur op maat' ? (ralCode || 'eigen RAL-kleur') : (o.profile_color || '')
-    if (color) details.push(`Kast/geleiderkleur: ${color}`)
-    if (o.cassette) details.push(`Kast: ${o.cassette}`)
-    if (o.guides) details.push(`Geleiders: ${o.guides}`)
+    add('Kast/geleiderkleur', color)
+    add('Kast', o.cassette)
+    add('Geleiders', o.guides)
     if (group === 'Screens') {
-      if (o.screen_fabric) details.push(`Doek/collectie: ${o.screen_fabric}`)
-      if (o.screen_fabric_color) details.push(`Doekkleur: ${o.screen_fabric_color}`)
+      add('Doek/collectie', o.screen_fabric)
+      add('Doekkleur', o.screen_fabric_color)
     }
-    if (group === 'Rolluiken' && o.shutter_slats) details.push(`Lamellen: ${o.shutter_slats}`)
-    if (o.motor_brand) details.push(`Motor: ${o.motor_brand}`)
-    if (o.operation) details.push(`Bediening: ${o.operation}`)
-    if (o.mounting) details.push(`Montage: ${o.mounting}`)
+    if (group === 'Rolluiken') add('Lamellen', o.shutter_slats)
+    add('Motor', o.motor_brand)
+    add('Bediening', o.operation)
+    add('Montage', o.mounting)
   }
-  if (o.notes_extra?.trim()) details.push(o.notes_extra.trim())
-  return details.join(' · ') || product
+  if (isSpecified(o.notes_extra)) details.push(o.notes_extra.trim())
+  return details.join(' | ') || product
 }

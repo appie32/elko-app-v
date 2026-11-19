@@ -3,11 +3,15 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
+import ProductPictogram from '@/components/ProductPictogram'
 import {
   PRODUCT_GROUPS,
   PROFILE_COLORS,
   buildProductDescription,
   getGroupForProduct,
+  hasProfileFinish,
+  preferredProfileWidth,
+  profileWidthMode,
   isHorDoor,
   productsForGroup,
   startingOptions,
@@ -55,6 +59,25 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
   const [manualDescription, setManualDescription] = useState(false)
+  const [measurementPhoto, setMeasurementPhoto] = useState<File | null>(null)
+  const [photoPreview, setPhotoPreview] = useState('')
+  const [photoCount, setPhotoCount] = useState(0)
+
+  useEffect(() => {
+    if (!measurementPhoto) { setPhotoPreview(''); return }
+    const url = URL.createObjectURL(measurementPhoto)
+    setPhotoPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [measurementPhoto])
+
+  useEffect(() => {
+    if (!lineId) return
+    let active = true
+    supabase.from('photos').select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId).eq('product_line_id', lineId)
+      .then(({ count }) => { if (active) setPhotoCount(count ?? 0) })
+    return () => { active = false }
+  }, [lineId, projectId])
 
   useEffect(() => {
     if (!lineId) return
@@ -73,9 +96,12 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
         mesh_type: data.mesh_type || 'Standaard horgaas',
         bottom_profile_type: bottom.toLowerCase().includes('hoog') ? 'Hoog onderprofiel' : 'Laag onderprofiel',
         bottom_profile_color: bottom.toLowerCase().includes('zwart') ? 'Zwart' : bottom.toLowerCase().includes('aluminium') ? 'Aluminium' : 'Wit',
-        profile_width: String(data.execution_description || '').toLowerCase().includes('3 cm') ? 'Slim profiel 3 cm' : 'Standaard profiel 4 cm',
+        profile_width: String(data.execution_description || '').toLowerCase().includes('3 cm')
+          ? 'Smal profiel 3 cm' : preferredProfileWidth(data.product_type || ''),
         ...savedOptions,
       }
+      if (options.profile_width === 'Standaard profiel 4 cm') options.profile_width = 'Breed profiel 4 cm'
+      if (options.profile_width === 'Slim profiel 3 cm') options.profile_width = 'Smal profiel 3 cm'
       const group: ProductGroup = (PRODUCT_GROUPS.some(g => g.key === data.product_group)
         ? data.product_group : getGroupForProduct(data.product_type)) as ProductGroup
       setForm({
@@ -116,7 +142,8 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
   }
   function switchGroup(group: ProductGroup) {
     const product = productsForGroup(group)[0]
-    setForm(previous => ({ ...previous, group, product, unitPrice: String(suggestedPrice(product) ?? ''), description: '' }))
+    setForm(previous => ({ ...previous, group, product, unitPrice: String(suggestedPrice(product) ?? ''),
+      options: { ...startingOptions(), profile_width: preferredProfileWidth(product) }, ralCode: '', description: '' }))
     setManualDescription(false)
     setNotice('')
   }
@@ -126,11 +153,34 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
     const shouldReplace = form.unitPrice === '' || form.unitPrice === String(beforeSuggestion ?? '')
     setForm(previous => ({
       ...previous, product, unitPrice: shouldReplace ? String(afterSuggestion ?? '') : previous.unitPrice,
-      options: { ...previous.options, mesh_type: product === 'Klikplissé raamhor' ? 'Standaard horgaas' : previous.options.mesh_type },
+      options: { ...previous.options,
+        profile_width: preferredProfileWidth(product),
+        mesh_type: product === 'Klikplissé raamhor' ? 'Standaard horgaas' : previous.options.mesh_type },
       description: '',
     }))
     setManualDescription(false)
     setNotice('')
+  }
+
+  async function uploadProductPhoto(productLineId: string): Promise<string> {
+    if (!measurementPhoto) return ''
+    try {
+      const file = measurementPhoto
+      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8)
+      const path = `${projectId}/${productLineId}/${crypto.randomUUID()}.${ext}`
+      const { error: storageError } = await supabase.storage.from('project-photos')
+        .upload(path, file, { contentType: file.type || undefined })
+      if (storageError) return storageError.message
+      const { data: url } = supabase.storage.from('project-photos').getPublicUrl(path)
+      const { error: dbError } = await supabase.from('photos').insert({
+        project_id: projectId, product_line_id: productLineId,
+        file_url: url.publicUrl, file_name: file.name,
+        photo_type: 'Inmeting', description: `${form.product} — ${form.room.trim()}`,
+      })
+      return dbError?.message || ''
+    } catch (err: unknown) {
+      return err instanceof Error ? err.message : 'De foto kon niet worden opgeslagen.'
+    }
   }
 
   async function save(addAnother: boolean) {
@@ -141,10 +191,13 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
     for (const [label, value] of [['Breedte', form.width], ['Hoogte', form.height]]) {
       if (value && (!Number.isInteger(Number(value)) || Number(value) <= 0)) { setNotice(`${label} moet een positief aantal millimeters zijn.`); return }
     }
+    if (measurementPhoto && measurementPhoto.size > 15 * 1024 * 1024) {
+      setNotice('De foto is groter dan 15 MB. Kies een kleinere foto.'); return
+    }
     const price = form.unitPrice === '' ? 0 : Number(form.unitPrice.replace(',', '.'))
     if (!Number.isFinite(price) || price < 0) { setNotice('Vul een geldig bedrag per stuk in.'); return }
     if (form.options.profile_color === 'RAL-kleur op maat' && !form.ralCode.trim()
-      && (form.group === 'Horren' || form.group === 'Screens' || form.group === 'Rolluiken')) {
+      && (form.group === 'Horren' || (form.group === 'Plisségordijnen' && profileWidthMode(form.product) !== 'none') || form.group === 'Screens' || form.group === 'Rolluiken')) {
       setNotice('Vul de RAL-code in bij eigen RAL-kleur.'); return
     }
     const color = form.options.profile_color || ''
@@ -152,6 +205,12 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
     const isHor = form.group === 'Horren'
     const bottom = isHorDoor(form.product)
       ? `${form.options.bottom_profile_type || ''} - ${form.options.bottom_profile_color || ''}` : 'Niet van toepassing'
+    const cleanOptions: ProductOptions = {
+      ...form.options,
+      profile_width: preferredProfileWidth(form.product) && profileWidthMode(form.product) === 'fixed4'
+        ? 'Breed profiel 4 cm' : profileWidthMode(form.product) === 'select' ? form.options.profile_width : '',
+      profile_finish: hasProfileFinish(form.product) ? (form.options.profile_finish || 'Mat') : '',
+    }
     const payload = {
       room: form.room.trim(), product_group: form.group, product_type: form.product,
       quantity: qty, width_mm: form.width ? Number(form.width) : null,
@@ -162,7 +221,7 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       ral_code: ral,
       mesh_type: usesMesh(form.product) ? form.options.mesh_type || 'Standaard horgaas' : null,
       bottom_profile: bottom,
-      product_options: { ...form.options },
+      product_options: cleanOptions,
       execution_description: descriptionToSave.trim() || autoDescription,
       attention_points: form.attentionPoints.trim(), customer_note: form.customerNote.trim(),
       manual_price: price,
@@ -171,6 +230,7 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
     setSaving(true)
     setNotice('Productregel opslaan...')
     try {
+      let savedLineId = lineId || ''
       if (editing) {
         const { error } = await supabase.from('product_lines').update(payload)
           .eq('id', lineId!).eq('project_id', projectId)
@@ -180,9 +240,18 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
           .select('sort_order').eq('project_id', projectId).order('sort_order', { ascending: false }).limit(1)
         if (sortError) throw sortError
         const sortOrder = Number(data?.[0]?.sort_order || 0) + 1
-        const { error } = await supabase.from('product_lines').insert({ ...payload, project_id: projectId, sort_order: sortOrder })
-        if (error) throw error
+        const { data: newLine, error } = await supabase.from('product_lines')
+          .insert({ ...payload, project_id: projectId, sort_order: sortOrder }).select('id').single()
+        if (error || !newLine) throw error || new Error('Productregel is niet opgeslagen.')
+        savedLineId = newLine.id
       }
+      const photoProblem = measurementPhoto ? await uploadProductPhoto(savedLineId) : ''
+      if (photoProblem) {
+        window.alert(`Productregel is opgeslagen, maar de foto is niet geüpload: ${photoProblem}. Voeg de foto opnieuw toe via Projectfoto's.`)
+        router.push(`/projects/${projectId}/photos?lineId=${savedLineId}`)
+        return
+      }
+      setMeasurementPhoto(null)
       if (addAnother && !editing) {
         setForm(previous => ({ ...previous, room: '', quantity: '1', width: '', height: '', customerNote: '',
           attentionPoints: '', description: '', options: { ...previous.options, notes_extra: '' } }))
@@ -220,14 +289,14 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       {PRODUCT_GROUPS.map(group => <button type="button" key={group.key}
         style={{ ...(form.group === group.key ? selectedStyle : neutralStyle), justifyContent: 'flex-start', gap: 12, minHeight: 64, fontSize: 15 }}
         onClick={() => switchGroup(group.key)}>
-        <span aria-hidden="true" style={{ fontSize: 24 }}>{group.icon}</span>{group.key}
+        <ProductPictogram group={group.key} size={43}/>{group.key}
       </button>)}
     </div>
     <h2 style={sectionStyle}>2. Product</h2>
     <div className="grid grid-2">
       {products.map(product => <button type="button" key={product}
-        style={{ ...(form.product === product ? selectedStyle : neutralStyle), minHeight: 54, textAlign: 'left', justifyContent: 'flex-start' }}
-        onClick={() => switchProduct(product)}>{product}</button>)}
+        style={{ ...(form.product === product ? selectedStyle : neutralStyle), minHeight: 62, gap: 8, textAlign: 'left', justifyContent: 'flex-start' }}
+        onClick={() => switchProduct(product)}><ProductPictogram group={form.group} product={product} size={35}/><span>{product}</span></button>)}
     </div>
     <h2 style={sectionStyle}>3. Inmeten</h2>
     <div className="grid grid-2">
@@ -237,8 +306,26 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       <label>Hoogte in mm<input type="number" min="1" step="1" value={form.height} onChange={e => update('height', e.target.value)} onFocus={e => e.target.select()} placeholder="Bijv. 2200" /></label>
     </div>
     {Number(form.quantity) > 1 && <p className="muted">Aantal groter dan 1 geldt alleen voor producten met dezelfde maten en uitvoering. Voeg anders aparte regels toe.</p>}
+    <div style={{marginTop:18, border:'1px solid #ddd5c9', padding:14, borderRadius:12, background:'#fbf9f5'}}>
+      <strong>Foto van deze inmeting (optioneel)</strong>
+      <p className="muted" style={{margin:'6px 0 10px'}}>Maak direct een foto van het raam, de deur of de ruimte. De foto wordt na het opslaan aan deze productregel gekoppeld.</p>
+      <div className="grid grid-2">
+        <label>Foto maken met camera
+          <input type="file" accept="image/*" capture="environment" onChange={e=>setMeasurementPhoto(e.target.files?.[0]||null)}/>
+        </label>
+        <label>Of bestaande foto kiezen
+          <input type="file" accept="image/*" onChange={e=>setMeasurementPhoto(e.target.files?.[0]||null)}/>
+        </label>
+      </div>
+      {measurementPhoto && <div style={{marginTop:12}}>
+        <p className="muted">Gekozen: {measurementPhoto.name}</p>
+        {photoPreview && <img src={photoPreview} alt="Preview inmeetfoto" style={{maxWidth:250,maxHeight:180,objectFit:'contain',borderRadius:8}}/>}
+        <div><button className="button secondary" type="button" onClick={()=>setMeasurementPhoto(null)}>Foto verwijderen</button></div>
+      </div>}
+      {editing && <p className="muted">{photoCount} foto's gekoppeld aan deze productregel. <a href={`/projects/${projectId}/photos?lineId=${lineId}`}>Bekijk de projectfoto's</a>.</p>}
+    </div>
     <h2 style={sectionStyle}>4. Uitvoering — {form.group}</h2>
-    {(form.group === 'Horren' || form.group === 'Screens' || form.group === 'Rolluiken') && <>
+    {(form.group === 'Horren' || (form.group === 'Plisségordijnen' && profileWidthMode(form.product) !== 'none') || form.group === 'Screens' || form.group === 'Rolluiken') && <>
       <p className="muted">Kleuren op het scherm zijn een benadering. De RAL-code is leidend.</p>
       <div className="grid grid-2">
         {PROFILE_COLORS.map(color => <button type="button" key={color.value}
@@ -248,10 +335,19 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
           {color.label}
         </button>)}
       </div>
-      {form.options.profile_color === 'RAL-kleur op maat' && <label style={fieldStyle}>RAL-code *<input value={form.ralCode} onChange={e => update('ralCode', e.target.value)} placeholder="Bijv. RAL 7035 mat" /></label>}
+      {form.options.profile_color === 'RAL-kleur op maat' && <label style={fieldStyle}>RAL-code *<input value={form.ralCode} onChange={e => update('ralCode', e.target.value)} placeholder="Bijv. RAL 7035" /></label>}
+      {hasProfileFinish(form.product) && <div style={{marginTop:14}}>
+        <strong>Profielafwerking</strong>
+        <div className="grid grid-2" style={{marginTop:8}}>
+          {['Mat','Glans'].map(finish=><button type="button" key={finish}
+            style={{...(form.options.profile_finish===finish?selectedStyle:neutralStyle), minHeight:45}}
+            onClick={()=>changeOptions('profile_finish',finish)}>{finish}</button>)}
+        </div>
+      </div>}
     </>}
     {form.group === 'Horren' && <div className="grid grid-2" style={fieldStyle}>
-      {simpleSelect('Profielbreedte', 'profile_width', ['Standaard profiel 4 cm','Slim profiel 3 cm', 'Nog te bepalen'])}
+       {profileWidthMode(form.product) === 'select' && simpleSelect('Profielbreedte', 'profile_width', ['Breed profiel 4 cm','Smal profiel 3 cm'])}
+       {profileWidthMode(form.product) === 'fixed4' && <p className="muted">Profiel: 4 cm (vaste uitvoering voor plissé hordeuren)</p>}
       {usesMesh(form.product) && simpleSelect('Gaassoort', 'mesh_type', form.product === 'Klikplissé raamhor' ? ['Standaard horgaas'] : ['Standaard horgaas', 'Premium / anti-pollen gaas', 'Extra transparant gaas', 'Petscreen'])}
       {isHorDoor(form.product) && <>
         {simpleSelect('Onderprofiel', 'bottom_profile_type', ['Laag onderprofiel', 'Hoog onderprofiel', 'Nog te bepalen'])}
@@ -263,7 +359,8 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       </>}
     </div>}
     {form.group === 'Plisségordijnen' && <div className="grid grid-2" style={fieldStyle}>
-      <label>Stofkleur / kleurnummer<input value={form.options.fabric_color || ''} onChange={e => changeOptions('fabric_color', e.target.value)} placeholder="Bijv. antraciet 102" /></label>
+       {profileWidthMode(form.product) === 'select' && simpleSelect('Framebreedte', 'profile_width', ['Breed profiel 4 cm','Smal profiel 3 cm'])}
+       <label>Stofkleur / kleurnummer<input value={form.options.fabric_color || ''} onChange={e => changeOptions('fabric_color', e.target.value)} placeholder="Bijv. antraciet 102" /></label>
       <label>Stofsoort / collectie<input value={form.options.fabric_type || ''} onChange={e => changeOptions('fabric_type', e.target.value)} placeholder="Bijv. honeycomb isolerend" /></label>
       {simpleSelect('Lichtdoorlaat', 'light_control', ['Lichtdoorlatend', 'Lichtwerend', '100% verduisterend', 'Nog te bepalen'])}
       {simpleSelect('Bediening', 'operation', ['Top-down bottom-up (TDBU)', 'Top-down', 'Bottom-up', 'Handgreep', 'Koord', 'Nog te bepalen'])}

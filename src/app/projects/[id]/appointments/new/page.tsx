@@ -50,6 +50,9 @@ export default function NewAppointmentPage() {
       return
     }
 
+    if (form.start_time >= form.end_time) {
+      alert('De eindtijd moet na de starttijd liggen.'); return
+    }
     const startsAt = new Date(`${form.date}T${form.start_time}:00`).toISOString()
     const endsAt = new Date(`${form.date}T${form.end_time}:00`).toISOString()
 
@@ -70,13 +73,20 @@ export default function NewAppointmentPage() {
       return
     }
 
-    router.push('/appointments')
+    // Wijzig alleen een vroege projectfase; een afgeronde offerte wordt nooit teruggezet.
+    if (form.appointment_type === 'Inmeting' && project.status === 'Nieuwe aanvraag') {
+      await supabase.from('projects').update({ status: 'Inmeting gepland' }).eq('id', projectId)
+    }
+    if (form.appointment_type === 'Montage' && ['Akkoord / opdracht','Bestelling doorgezet'].includes(project.status)) {
+      await supabase.from('projects').update({ status: 'Montage gepland' }).eq('id', projectId)
+    }
+    router.push(`/projects/${projectId}`)
   }
 
   return (
     <div className="card">
       <h1>Afspraak toevoegen</h1>
-      <p className="muted">{project?.project_name}</p>
+      <p className="muted">{project?.project_name}. Bij een nieuwe aanvraag zet een inmeetafspraak de projectstatus automatisch op ‘Inmeting gepland’.</p>
 
       <div className="grid grid-2">
         <label>Type
