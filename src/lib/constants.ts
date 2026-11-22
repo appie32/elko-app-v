@@ -104,3 +104,19 @@ export const BOTTOM_PROFILES = [
   'Aluminium',
   'Niet van toepassing',
 ]
+
+// Belangrijk: de afspraakpagina heeft deze bestaande exports nodig.
+export const APPOINTMENT_TYPES = [
+  'Inmeting',
+  'Montage',
+  'Service',
+  'Controle',
+  'Telefonisch contact',
+]
+
+export const APPOINTMENT_STATUSES = [
+  'Gepland',
+  'Bevestigd',
+  'Uitgevoerd',
+  'Geannuleerd',
+]
