@@ -6,7 +6,6 @@ import Link from 'next/link'
 import QuotePreview from '@/components/QuotePreview'
 import { supabase } from '@/lib/supabase/client'
 import {
-  buildAccompanyingMessage,
   buildQuoteText,
   formatEuro,
   lineTotal,
@@ -32,17 +31,32 @@ const people = ['Alexa', 'Manuela', 'Abdullah']
 const earlyStatuses = ['Nieuwe aanvraag', 'Inmeting gepland', 'Ingemeten', 'Offerte gemaakt']
 const offerStatuses = [...earlyStatuses, 'Offerte verzonden']
 
-function makeQuoteNumber(customer: Customer, project: Project): string {
-  // Alleen voor NIEUWE offertes: jaartal, postcode en huisnummer, met een
-  // unieke toevoeging. Opgeslagen offertenummers wijzigen nooit.
+function makeQuoteBase(customer: Customer, project: Project): string {
+  // Korte nummering: jaar - de eerste vier cijfers van de postcode - huisnummer.
+  // Oude offertes en hun nummers blijven ongewijzigd.
   const year = new Date().getFullYear()
-  const postcode = String(customer.postal_code || project.postal_code || '')
-    .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
-  const houseNumber = String(customer.house_number || '')
-    .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)
-  const unique = crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase()
-  if (!postcode || !houseNumber) return `ELKO-${year}-${unique}`
-  return `ELKO-${year}-${postcode}-${houseNumber}-${unique}`
+  const digits = String(customer.postal_code || project.postal_code || '').replace(/[^0-9]/g, '').slice(0, 4)
+  const house = String(customer.house_number || '')
+    .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 7)
+  if (digits.length !== 4 || !house) return `ELKO-${year}`
+  return `ELKO-${year}-${digits}-${house}`
+}
+
+function quoteMessage(customer: Customer): string {
+  return `Beste ${customer.customer_name},
+
+Hartelijk dank voor uw aanvraag en de prettige kennismaking.
+
+Bijgevoegd vindt u de vrijblijvende offerte van ELKO Solutions. Hierin staan de gekozen producten, uitvoeringen en prijzen overzichtelijk vermeld. Inmeten, levering en vakkundige montage zijn inbegrepen, tenzij anders aangegeven.
+
+Heeft u vragen of wilt u iets aanpassen? Dan helpen wij u graag.
+
+Bij akkoord kunt u deze offerte eenvoudig per e-mail of WhatsApp aan ons bevestigen.
+
+Met vriendelijke groet,
+
+Alexa - ELKO Solutions
+Maatwerk zonder concessies.`
 }
 
 function dateNL(value: string | null | undefined): string {
@@ -117,7 +131,7 @@ export default function QuotePage() {
       setLines(nextLines)
       setQuotes(nextQuotes)
       const total = nextLines.reduce((sum, line) => sum + lineTotal(line), 0)
-      setMessageText(buildAccompanyingMessage({ customer: nextCustomer, project: nextProject, totalAmount: total }))
+      setMessageText(quoteMessage(nextCustomer))
       const requestedQuote = new URLSearchParams(window.location.search).get('quote')
       if (requestedQuote && nextQuotes.some((quote) => quote.id === requestedQuote)) {
         setSelectedQuoteId(requestedQuote)
@@ -151,11 +165,21 @@ export default function QuotePage() {
     }
     let inserted: QuoteRecord | null = null
     let insertError = ''
-    // De UNIQUE-constraint in Supabase beschermt ook bij een uitzonderlijke nummerbotsing.
+    // Per adres de eerste offerte kort; bij nieuwe offerteversies een volgnummer.
+    // De UNIQUE-constraint in Supabase blijft de definitieve bescherming.
+    const base = makeQuoteBase(customer, project)
+    const { data: existing, error: numberLookupError } = await supabase.from('quotes')
+      .select('quote_number').like('quote_number', `${base}%`).limit(200)
+    const taken = new Set((existing || []).map(row => String(row.quote_number).toUpperCase()))
+    let sequence = 1
+    while (taken.has((sequence === 1 ? base : `${base}-${String(sequence).padStart(2, '0')}`).toUpperCase())) sequence++
     for (let attempt = 0; attempt < 3; attempt++) {
+      const candidate = numberLookupError
+        ? `${base}-${crypto.randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase()}`
+        : attempt === 0 && sequence === 1 ? base : `${base}-${String(sequence + attempt).padStart(2, '0')}`
       const { data, error: dbError } = await supabase.from('quotes').insert({
         project_id: project.id,
-        quote_number: makeQuoteNumber(customer, project),
+        quote_number: candidate,
         total_amount: total,
         customer_snapshot: customer,
         project_snapshot: snapshot,

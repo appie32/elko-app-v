@@ -119,6 +119,8 @@ function splitDescriptionAndMontage(input: unknown): { product: string; montage:
     }
 
     const removal = /\b(?:oude|bestaande)\s+(?:hor|hordeur|pliss[eé]hordeur|screen|rolluik)\b.{0,160}\b(?:verwijderen|demonteren|weghalen)\b/i.test(content)
+      || /\b(?:plakplint|plint|afdekprofiel|hoekprofiel|bovenprofiel|middenstijl)\b.{0,120}\b(?:verwijderen|eraf|weghalen|demonteren|inkorten|afhalen|afzagen)\b/i.test(content)
+      || /\b(?:verwijderen|eraf|weghalen|inkorten|afzagen)\b.{0,120}\b(?:plakplint|plint|afdekprofiel|hoekprofiel|bovenprofiel)\b/i.test(content)
     const magnetChange = /\b(?:magneetsluiting|magneetstrip|borstelstrip)\b.{0,180}\b(?:vervangen|aanpassen|monteren)\b|\b(?:vervangen|aanpassen)\b.{0,180}\b(?:magneetsluiting|magneetstrip|borstelstrip)\b/i.test(content)
     const installationAction = /\b(?:wij|we)\s+(?:zullen\s+|kunnen\s+)?(?:monteren|bevestigen|demonteren|verwijderen|boren|schroeven)|\b(?:monteren|demonteren|bevestigen|verwijderen)\s+(?:met|op|aan|in|de|het|een|bestaande)|\b(?:met\s+)?(?:steiger|montagetape|bevestigingsschroeven)\s+(?:nodig|gebruiken|toepassen)/i.test(content)
     const actualInstallationNote = removal || magnetChange || installationAction || /\bmontage\s+(?:in\s+overleg|volgens\s+afspraak|op\s+afspraak)\b/i.test(content)
@@ -196,8 +198,8 @@ function detailParts(line: PdfLine): string[] {
       add('Bediening', o.operation)
     }
   }
-  const extraProductNote = splitDescriptionAndMontage(line.customer_note).product
-  if (extraProductNote && !isPlaceholder(extraProductNote)) add('', extraProductNote)
+  // Klantgerichte opmerkingen zijn montage-/uitvoeringsafspraken en worden
+  // uitsluitend onder het totaal getoond, niet tussen de productspecificaties.
   return Array.from(new Set(parts))
 }
 function fit(text: unknown, font: PDFFont, size: number, width: number): string[] {
@@ -421,7 +423,8 @@ export async function POST(request: Request) {
     for (const line of sorted) {
       const remarks = [
         ...splitDescriptionAndMontage(line.execution_description).montage,
-        ...splitDescriptionAndMontage(line.customer_note).montage,
+        ...(valueOrBlank(line.customer_note) && !isPlaceholder(line.customer_note)
+          ? [valueOrBlank(line.customer_note)] : []),
       ]
       addMontageRow(productTitle(line), remarks)
     }

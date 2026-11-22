@@ -3,9 +3,12 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase/client'
-import ProductPictogram from '@/components/ProductPictogram'
+import ProductThumbnail from '@/components/ProductThumbnail'
 import {
   PRODUCT_GROUPS,
+  getMeshOptions,
+  defaultFinishForColor,
+  suggestedPriceForSelection,
   PROFILE_COLORS,
   buildProductDescription,
   getGroupForProduct,
@@ -62,6 +65,8 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
   const [measurementPhoto, setMeasurementPhoto] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState('')
   const [photoCount, setPhotoCount] = useState(0)
+  // Een handmatig ingevulde prijs blijft altijd leidend. Alleen standaardprijzen wijzigen automatisch.
+  const [priceManuallyEdited, setPriceManuallyEdited] = useState(false)
 
   useEffect(() => {
     if (!measurementPhoto) { setPhotoPreview(''); return }
@@ -100,6 +105,11 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
           ? 'Smal profiel 3 cm' : preferredProfileWidth(data.product_type || ''),
         ...savedOptions,
       }
+      // Herken premiumgaas uit oudere offertes zonder een opgeslagen prijs aan te passen.
+      const availableMesh = getMeshOptions(data.product_type || '')
+      if (/premium|pollen|anti[- ]?pollen/i.test(options.mesh_type || '') && availableMesh.some(v => /premium/i.test(v))) {
+        options.mesh_type = availableMesh.find(v => /premium/i.test(v)) || options.mesh_type
+      }
       if (options.profile_width === 'Standaard profiel 4 cm') options.profile_width = 'Breed profiel 4 cm'
       if (options.profile_width === 'Slim profiel 3 cm') options.profile_width = 'Smal profiel 3 cm'
       const group: ProductGroup = (PRODUCT_GROUPS.some(g => g.key === data.product_group)
@@ -114,6 +124,7 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
         description: data.execution_description || '', options,
       })
       setManualDescription(true) // bestaande omschrijving nooit stilzwijgend overschrijven
+      setPriceManuallyEdited(true) // bestaande verkoopprijzen worden nooit automatisch overschreven
       setLoading(false)
     }
     load()
@@ -126,6 +137,15 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
   }), [form])
 
   const descriptionToSave = manualDescription ? form.description : autoDescription
+  const calculatedPrice = useMemo(() => suggestedPriceForSelection(
+    form.product, form.options, form.width, form.height,
+  ), [form.product, form.options, form.width, form.height])
+
+  useEffect(() => {
+    if (priceManuallyEdited || editing && loading) return
+    const formatted = calculatedPrice == null ? '' : String(calculatedPrice)
+    setForm(previous => previous.unitPrice === formatted ? previous : { ...previous, unitPrice: formatted })
+  }, [calculatedPrice, priceManuallyEdited, editing, loading])
   const products = useMemo(() => {
     const base = productsForGroup(form.group)
     if (form.product && !base.includes(form.product)) base.unshift(form.product)
@@ -137,27 +157,36 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
     setNotice('')
   }
   function changeOptions(key: keyof ProductOptions, value: string) {
-    setForm(previous => ({ ...previous, options: { ...previous.options, [key]: value } }))
+    setForm(previous => ({ ...previous, options: {
+      ...previous.options, [key]: value,
+      ...(key === 'profile_color' ? { profile_finish: defaultFinishForColor(value) } : {}),
+    } }))
     setNotice('')
   }
   function switchGroup(group: ProductGroup) {
     const product = productsForGroup(group)[0]
-    setForm(previous => ({ ...previous, group, product, unitPrice: String(suggestedPrice(product) ?? ''),
-      options: { ...startingOptions(), profile_width: preferredProfileWidth(product) }, ralCode: '', description: '' }))
+    const opts = { ...startingOptions(), profile_width: preferredProfileWidth(product) }
+    opts.mesh_type = getMeshOptions(product)[0] || ''
+    setForm(previous => ({ ...previous, group, product,
+      unitPrice: String(suggestedPriceForSelection(product, opts) ?? ''),
+      options: opts, ralCode: '', description: '' }))
+    setPriceManuallyEdited(false)
     setManualDescription(false)
     setNotice('')
   }
   function switchProduct(product: string) {
-    const beforeSuggestion = suggestedPrice(form.product)
-    const afterSuggestion = suggestedPrice(product)
-    const shouldReplace = form.unitPrice === '' || form.unitPrice === String(beforeSuggestion ?? '')
-    setForm(previous => ({
-      ...previous, product, unitPrice: shouldReplace ? String(afterSuggestion ?? '') : previous.unitPrice,
-      options: { ...previous.options,
+    setForm(previous => {
+      const choices = getMeshOptions(product)
+      const opts: ProductOptions = {
+        ...previous.options,
         profile_width: preferredProfileWidth(product),
-        mesh_type: product === 'Klikplissé raamhor' ? 'Standaard horgaas' : previous.options.mesh_type },
-      description: '',
-    }))
+        mesh_type: choices[0] || '', // nieuw product begint met de standaardgaaskeuze
+      }
+      return { ...previous, product, options: opts,
+        unitPrice: String(suggestedPriceForSelection(product, opts, previous.width, previous.height) ?? ''),
+        description: '' }
+    })
+    setPriceManuallyEdited(false)
     setManualDescription(false)
     setNotice('')
   }
@@ -209,7 +238,7 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       ...form.options,
       profile_width: preferredProfileWidth(form.product) && profileWidthMode(form.product) === 'fixed4'
         ? 'Breed profiel 4 cm' : profileWidthMode(form.product) === 'select' ? form.options.profile_width : '',
-      profile_finish: hasProfileFinish(form.product) ? (form.options.profile_finish || 'Mat') : '',
+      profile_finish: hasProfileFinish(form.product) ? (form.options.profile_finish || defaultFinishForColor(color)) : '',
     }
     const payload = {
       room: form.room.trim(), product_group: form.group, product_type: form.product,
@@ -219,13 +248,13 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       standard_color: ral ? null : ((isHor || form.group === 'Screens' || form.group === 'Rolluiken') ? color : null),
       profile_color: ral ? null : ((isHor || form.group === 'Screens' || form.group === 'Rolluiken') ? color : null),
       ral_code: ral,
-      mesh_type: usesMesh(form.product) ? form.options.mesh_type || 'Standaard horgaas' : null,
+      mesh_type: usesMesh(form.product) ? (getMeshOptions(form.product).includes(form.options.mesh_type || '') ? form.options.mesh_type : getMeshOptions(form.product)[0]) : null,
       bottom_profile: bottom,
       product_options: cleanOptions,
       execution_description: descriptionToSave.trim() || autoDescription,
       attention_points: form.attentionPoints.trim(), customer_note: form.customerNote.trim(),
       manual_price: price,
-      suggested_price: suggestedPrice(form.product),
+      suggested_price: calculatedPrice,
     }
     setSaving(true)
     setNotice('Productregel opslaan...')
@@ -289,14 +318,14 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       {PRODUCT_GROUPS.map(group => <button type="button" key={group.key}
         style={{ ...(form.group === group.key ? selectedStyle : neutralStyle), justifyContent: 'flex-start', gap: 12, minHeight: 64, fontSize: 15 }}
         onClick={() => switchGroup(group.key)}>
-        <ProductPictogram group={group.key} size={43}/>{group.key}
+        <ProductThumbnail group={group.key} size={43}/>{group.key}
       </button>)}
     </div>
     <h2 style={sectionStyle}>2. Product</h2>
     <div className="grid grid-2">
       {products.map(product => <button type="button" key={product}
         style={{ ...(form.product === product ? selectedStyle : neutralStyle), minHeight: 62, gap: 8, textAlign: 'left', justifyContent: 'flex-start' }}
-        onClick={() => switchProduct(product)}><ProductPictogram group={form.group} product={product} size={35}/><span>{product}</span></button>)}
+        onClick={() => switchProduct(product)}><ProductThumbnail group={form.group} product={product} size={43}/><span>{product}</span></button>)}
     </div>
     <h2 style={sectionStyle}>3. Inmeten</h2>
     <div className="grid grid-2">
@@ -348,7 +377,11 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
     {form.group === 'Horren' && <div className="grid grid-2" style={fieldStyle}>
        {profileWidthMode(form.product) === 'select' && simpleSelect('Profielbreedte', 'profile_width', ['Breed profiel 4 cm','Smal profiel 3 cm'])}
        {profileWidthMode(form.product) === 'fixed4' && <p className="muted">Profiel: 4 cm (vaste uitvoering voor plissé hordeuren)</p>}
-      {usesMesh(form.product) && simpleSelect('Gaassoort', 'mesh_type', form.product === 'Klikplissé raamhor' ? ['Standaard horgaas'] : ['Standaard horgaas', 'Premium / anti-pollen gaas', 'Extra transparant gaas', 'Petscreen'])}
+      {usesMesh(form.product) && <div>
+        {getMeshOptions(form.product).length === 1
+          ? <p className="muted">Gaassoort: <strong>{getMeshOptions(form.product)[0]}</strong> (vaste uitvoering)</p>
+          : simpleSelect('Gaassoort', 'mesh_type', getMeshOptions(form.product))}
+      </div>}
       {isHorDoor(form.product) && <>
         {simpleSelect('Onderprofiel', 'bottom_profile_type', ['Laag onderprofiel', 'Hoog onderprofiel', 'Nog te bepalen'])}
         {simpleSelect('Onderprofielkleur', 'bottom_profile_color', ['Wit', 'Zwart', 'Aluminium', 'Nog te bepalen'])}
@@ -380,15 +413,18 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       {simpleSelect('Montagewijze', 'mounting', ['Nog te bepalen', 'Op de dag', 'In de dag', 'Gevelmontage'])}
       <p className="muted">De aandrijving is gekoppeld aan het gekozen product: {form.product.startsWith('Solar') ? 'solar' : 'elektrisch'}.</p>
     </div>}
-    <label style={sectionStyle}>Aanvullende uitvoering / bijzonderheden
-      <textarea value={form.options.notes_extra || ''} onChange={e => changeOptions('notes_extra', e.target.value)} placeholder="Bijv. draairichting, vaste vleugel, montageruimte, voedingspunt" />
+    <label style={sectionStyle}>Aanvullende PRODUCTspecificaties (optioneel)
+      <textarea value={form.options.notes_extra || ''} onChange={e => changeOptions('notes_extra', e.target.value)} placeholder="Alleen productkenmerken, bijv. draairichting, vaste vleugel, speciaal profiel. Geen montagewerkzaamheden." />
     </label>
     <h2 style={sectionStyle}>5. Prijs en offerte</h2>
     <div className="grid grid-2">
-      <label>Prijs per stuk incl. btw (€)<input inputMode="decimal" value={form.unitPrice} onChange={e => update('unitPrice', e.target.value)} placeholder="Handmatig invoeren" /></label>
+      <label>Prijs per stuk incl. btw (€)<input inputMode="decimal" value={form.unitPrice}
+        onChange={e => { setPriceManuallyEdited(true); update('unitPrice', e.target.value) }} placeholder="Handmatig invoeren" /></label>
       <label>Totaal incl. btw (€)<input readOnly value={new Intl.NumberFormat('nl-NL',{style:'currency',currency:'EUR'}).format((Number(form.unitPrice.replace(',','.')) || 0) * (Number(form.quantity) || 0))} /></label>
     </div>
-    {suggestedPrice(form.product) != null && <p className="muted">Indicatieve richtprijs voor {form.product}: € {suggestedPrice(form.product)} per stuk. Controleer altijd de definitieve maatwerkprijs.</p>}
+    {calculatedPrice != null && <p className="muted">Standaardprijs voor deze uitvoering: {new Intl.NumberFormat('nl-NL',{style:'currency',currency:'EUR'}).format(calculatedPrice)} per stuk incl. btw.
+      {priceManuallyEdited ? ' Je hebt een eigen prijs ingevuld; die blijft behouden.' : ' Aanpassen blijft mogelijk.'}
+      {priceManuallyEdited && <button type="button" className="button secondary" style={{marginLeft:10}} onClick={()=>{setPriceManuallyEdited(false);update('unitPrice',String(calculatedPrice))}}>Standaardprijs gebruiken</button>}</p>}
     {!form.unitPrice && <p className="muted">Zonder prijs kun je de inmeting als conceptregel opslaan (bedrag € 0,00). Vul de prijs in voordat je de offerte verstuurt.</p>}
     <div className="card" style={{ background: '#f9f6f1', marginTop: 16 }}>
       <h3>Offerteomschrijving</h3>
@@ -396,7 +432,10 @@ export default function ProductLineEditor({ projectId, lineId }: { projectId: st
       <label><textarea value={manualDescription ? form.description : autoDescription} onChange={e => { setManualDescription(true); update('description', e.target.value) }} /></label>
       {manualDescription && <button type="button" className="button secondary" style={{ marginTop: 10 }} onClick={() => { setManualDescription(false); update('description', '') }}>Automatische omschrijving gebruiken</button>}
     </div>
-    <label style={fieldStyle}>Klantgerichte opmerking<textarea value={form.customerNote} onChange={e => update('customerNote', e.target.value)} /></label>
+    <label style={fieldStyle}>Montage / bijzonderheden voor de klant
+      <textarea value={form.customerNote} onChange={e => update('customerNote', e.target.value)}
+        placeholder="Bijv. bestaande plakplint verwijderen; kozijn inkorten. Verschijnt onder het totaalbedrag, niet bij de productspecificaties." />
+    </label>
     <label style={fieldStyle}>Interne montage- en inmeetnotities (niet op offerte)<textarea value={form.attentionPoints} onChange={e => update('attentionPoints', e.target.value)} /></label>
     {notice && <p role="status" style={{ color: notice.includes('mislukt') ? '#9b2525' : '#4A3520', marginTop: 15 }}>{notice}</p>}
     <div className="row" style={{ marginTop: 18 }}>

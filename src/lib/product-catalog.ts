@@ -33,6 +33,48 @@ export const PRODUCT_GROUPS = [
 
 export type ProductGroup = (typeof PRODUCT_GROUPS)[number]['key']
 
+// De gaaskeuzes zijn productgebonden. Bestaande offertes/snapshots wijzigen niet.
+export const STANDARD_MESH = 'Standaard horgaas'
+export const PREMIUM_MESH = 'Premium / pollenwerend gaas'
+export const PETSCREEN_MESH = 'Petscreen'
+export function getMeshOptions(product: string): string[] {
+  const name = getProductNameForPicker(product)
+  if (name === 'Klikplissé raamhor') return [STANDARD_MESH]
+  if (name === 'Luxe schuifhordeur') return [PETSCREEN_MESH]
+  if (name === 'Scharnierhordeur') return [STANDARD_MESH, PREMIUM_MESH, PETSCREEN_MESH]
+  if (['Opbouw plissé raamhor', 'Dakraamhor', 'Enkele plissé hordeur',
+    'Dubbele plissé hordeur', 'Duo opbouw plissé raamhor', 'Plissé & hor'].includes(name)) {
+    return [STANDARD_MESH, PREMIUM_MESH]
+  }
+  return []
+}
+
+export function defaultFinishForColor(color: string): 'Mat' | 'Glans' {
+  // Wit RAL 9016 wordt standaard glans; overige bekende kleuren standaard mat.
+  return color.includes('9016') ? 'Glans' : 'Mat'
+}
+
+export function suggestedPriceForSelection(productName: string, options: ProductOptions, width?: string | number, height?: string | number): number | null {
+  const name = getProductNameForPicker(productName)
+  const selectedColor = String(options.profile_color || '')
+  const standard = /RAL\s*(9016|7016)\b/.test(selectedColor)
+  const mesh = String(options.mesh_type || '').toLowerCase()
+  const premium = /premium|pollenwerend|anti[- ]?pollen/.test(mesh)
+  switch (name) {
+    case 'Klikplissé raamhor':
+    case 'Opbouw plissé raamhor': return 167.50
+    case 'Dakraamhor': {
+      const w = Number(width), h = Number(height)
+      if (!(w > 0 && h > 0)) return null
+      return (w * h <= 1_000_000) ? 150 : 167.50
+    }
+    case 'Enkele plissé hordeur': return (standard ? 275 : 300) + (premium ? 25 : 0)
+    case 'Dubbele plissé hordeur': return 595 + (standard ? 0 : 50) + (premium ? 50 : 0)
+    default: return null
+  }
+}
+
+
 /** Oude productnamen blijven herkenbaar en bewerkbaar. */
 const legacyNames: Record<string, string> = {
   'Klik-plissé raamhor': 'Klikplissé raamhor',
@@ -71,7 +113,7 @@ export function isHorDoor(name: string): boolean {
 }
 
 export function usesMesh(name: string): boolean {
-  return getGroupForProduct(name) === 'Horren' || name === 'Plissé & hor'
+  return getMeshOptions(name).length > 0
 }
 
 export const PROFILE_COLORS = [
@@ -108,7 +150,7 @@ export type ProductOptions = {
 export function startingOptions(): ProductOptions {
   return {
     profile_color: 'Wit — RAL 9016',
-    profile_width: 'Breed profiel 4 cm', profile_finish: 'Mat',
+    profile_width: 'Breed profiel 4 cm', profile_finish: 'Glans',
     mesh_type: 'Standaard horgaas',
     bottom_profile_type: 'Laag onderprofiel',
     bottom_profile_color: 'Wit',
@@ -120,14 +162,7 @@ export function startingOptions(): ProductOptions {
 }
 
 export function suggestedPrice(name: string): number | null {
-  // Alleen beperkte, bekende richtprijzen. Overige producten hebben een handmatig offertebedrag.
-  const prices: Record<string, number> = {
-    'Klikplissé raamhor': 150,
-    'Opbouw plissé raamhor': 150,
-    'Enkele plissé hordeur': 300,
-    'Dubbele plissé hordeur': 595,
-  }
-  return prices[name] ?? null
+  return suggestedPriceForSelection(name, startingOptions())
 }
 
 /** Product-specifieke profielkeuze: geen misleidende 3/4 cm-optie bij andere systemen. */
